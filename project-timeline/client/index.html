@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1.0" />
+    <title>Project Timeline Tracker</title>
+    <link
+      href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=DM+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        --bg: #f1f5f9;
+        --surface: #ffffff;
+        --surface2: #f8fafc;
+        --border: #e2e8f0;
+        --border-strong: #cbd5e1;
+        --text: #0f172a;
+        --text-2: #475569;
+        --text-3: #94a3b8;
+        --blue: #2563eb;
+        --blue-hover: #1d4ed8;
+        --blue-light: #eff6ff;
+        --blue-mid: #dbeafe;
+        --green: #16a34a;
+        --green-hover: #15803d;
+        --green-light: #f0fdf4;
+        --green-mid: #bbf7d0;
+        --red-light: #fff1f2;
+        --red-mid: #fecdd3;
+        --red-text: #be123c;
+        --amber-light: #fffbeb;
+        --amber-mid: #fde68a;
+        --amber-text: #92400e;
+        --wknd-bg: #f8fafc;
+        --align-bg: #fffbeb;
+        --holiday-bg: #fff1f2;
+        --radius: 8px;
+      }
+      * { box-sizing: border-box; margin: 0; padding: 0; }
+      html, body { height: 100%; overflow: hidden; }
+      body {
+        font-family: 'Plus Jakarta Sans', sans-serif;
+        background: var(--bg);
+        color: var(--text);
+        font-size: 13px;
+        line-height: 1.5;
+      }
+      ::-webkit-scrollbar { width: 6px; height: 6px; }
+      ::-webkit-scrollbar-track { background: transparent; }
+      ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 99px; }
+      ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+      input[type="number"]::-webkit-inner-spin-button,
+      input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+      input[type="number"] { -moz-appearance: textfield; }
+      button { font-family: 'Plus Jakarta Sans', sans-serif; cursor: pointer; }
+      input, select, textarea { font-family: 'Plus Jakarta Sans', sans-serif; }
+      .mono { font-family: 'DM Mono', monospace; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>

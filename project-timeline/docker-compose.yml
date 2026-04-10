@@ -1,0 +1,66 @@
+services:
+  # ── PostgreSQL ──────────────────────────────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    ports:
+      - "5432:5432" # expose to host for local development
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-project_timeline}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    volumes:
+      - db_data:/var/lib/postgresql/data # persist data across restarts
+      - ./server/db/schema.sql:/docker-entrypoint-initdb.d/schema.sql # auto-run on first start
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-project_timeline}",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - internal
+
+  # ── Express API server ──────────────────────────────────────────────────────
+  server:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      NODE_ENV: development
+      PORT: 3001
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-project_timeline}
+      CLIENT_ORIGIN: ${CLIENT_ORIGIN:-http://localhost:5173}
+      SESSION_SECRET: ${SESSION_SECRET:-dev-session-secret-change-in-production}
+    depends_on:
+      db:
+        condition: service_healthy # wait for postgres to be ready
+    ports:
+      - "3001:3001" # expose to host for local development
+    networks:
+      - internal
+      - public
+
+  # ── React frontend (nginx) ──────────────────────────────────────────────────
+  client:
+    build:
+      context: ./client
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "${CLIENT_PORT:-80}:80" # change CLIENT_PORT in .env to avoid conflicts
+    depends_on:
+      - server
+    networks:
+      - public
+
+networks:
+  internal: # db ↔ server (not exposed to host)
+  public: # server ↔ client ↔ host
+
+volumes:
+  db_data: # named volume so postgres data survives `docker compose down`

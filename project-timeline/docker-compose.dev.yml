@@ -1,0 +1,39 @@
+# docker-compose.dev.yml
+# Extends docker-compose.yml for local development.
+# Usage: docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+#
+# Differences from production:
+#   - db:     port exposed to host so you can connect with psql/DBeaver
+#   - server: nodemon hot-reload, source mounted as volume
+#   - client: Vite dev server with HMR instead of nginx
+
+services:
+
+  db:
+    ports:
+      - "5432:5432"    # expose postgres to host for direct connections
+
+  server:
+    build:
+      target: builder  # use a dev-friendly build stage if you add one
+    command: npx nodemon index.js
+    environment:
+      NODE_ENV: development
+    volumes:
+      - ./server:/app                   # mount source for hot-reload
+      - /app/node_modules               # keep container node_modules isolated
+    ports:
+      - "3001:3001"    # expose API to host for direct testing (Postman, curl)
+
+  client:
+    build:
+      context: ./client
+      dockerfile: Dockerfile.dev        # use the dev Dockerfile below
+    command: npm run dev -- --host 0.0.0.0
+    environment:
+      VITE_API_BASE: ""                 # empty = use proxy (vite.config.js)
+    volumes:
+      - ./client:/app
+      - /app/node_modules
+    ports:
+      - "5173:5173"    # Vite HMR port
