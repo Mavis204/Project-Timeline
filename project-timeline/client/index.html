@@ -37,25 +37,115 @@
         --holiday-bg: #fff1f2;
         --radius: 8px;
       }
-      * { box-sizing: border-box; margin: 0; padding: 0; }
-      html, body { height: 100%; overflow: hidden; }
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+      html,
+      body,
+      #root {
+        height: 100%;
+      }
       body {
-        font-family: 'Plus Jakarta Sans', sans-serif;
+        margin: 0;
+        overflow-y: auto; /* ✅ main scroll */
+        overflow-x: hidden; /* prevent sideways bugs */
+        font-family: "Plus Jakarta Sans", sans-serif;
         background: var(--bg);
         color: var(--text);
         font-size: 13px;
         line-height: 1.5;
       }
-      ::-webkit-scrollbar { width: 6px; height: 6px; }
-      ::-webkit-scrollbar-track { background: transparent; }
-      ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 99px; }
-      ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+      ::-webkit-scrollbar {
+        width: 6px;
+        height: 6px;
+      }
+      ::-webkit-scrollbar-track {
+        background: transparent;
+      }
+      ::-webkit-scrollbar-thumb {
+        background: #cbd5e1;
+        border-radius: 99px;
+      }
+      ::-webkit-scrollbar-thumb:hover {
+        background: #94a3b8;
+      }
       input[type="number"]::-webkit-inner-spin-button,
-      input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
-      input[type="number"] { -moz-appearance: textfield; }
-      button { font-family: 'Plus Jakarta Sans', sans-serif; cursor: pointer; }
-      input, select, textarea { font-family: 'Plus Jakarta Sans', sans-serif; }
-      .mono { font-family: 'DM Mono', monospace; }
+      input[type="number"]::-webkit-outer-spin-button {
+        -webkit-appearance: none;
+        margin: 0;
+      }
+      input[type="number"] {
+        -moz-appearance: textfield;
+      }
+      button {
+        font-family: "Plus Jakarta Sans", sans-serif;
+        cursor: pointer;
+      }
+      input,
+      select,
+      textarea {
+        font-family: "Plus Jakarta Sans", sans-serif;
+      }
+      .mono {
+        font-family: "DM Mono", monospace;
+      }
+
+      /* ═══════════════════════════════════════════════════════════
+         ONBOARDING LAYOUT STYLES
+         ═══════════════════════════════════════════════════════════ */
+      .app-shell {
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+      }
+
+      .app-header {
+        position: sticky;
+        top: 0;
+        z-index: 50;
+        background: white;
+        border-bottom: 1px solid #e5e7eb;
+        height: 84px;
+      }
+
+      .onboarding {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        background: #f8fafc;
+      }
+
+      .onboarding-sticky {
+        position: sticky;
+        top: 84px;
+        z-index: 40;
+        background: white;
+        border-bottom: 1px solid #e5e7eb;
+        padding: 20px 32px;
+      }
+
+      .onboarding-content {
+        flex: 1;
+        padding: 32px;
+        max-width: 900px;
+        width: 100%;
+        margin: 0 auto;
+        overflow: visible;
+      }
+
+      .onboarding-footer {
+        position: sticky;
+        bottom: 0;
+        z-index: 40;
+        background: white;
+        border-top: 1px solid #e5e7eb;
+        padding: 16px 32px;
+        display: flex;
+        justify-content: flex-end;
+        gap: 12px;
+      }
     </style>
   </head>
   <body>

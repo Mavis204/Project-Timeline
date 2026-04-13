@@ -80,16 +80,15 @@ export default function TopBar({ user, onLogout, onNavigateDashboard }) {
           </span>
         </div>
         <div>
-          <div
+          <img
+            src="/timeline_logo_final.svg"
+            alt="Timeline"
             style={{
-              fontSize: "15px",
-              fontWeight: "700",
-              color: "#1e293b",
-              lineHeight: 1.2,
+              height: 32,
+              width: "auto",
+              display: "block",
             }}
-          >
-            Project Timeline
-          </div>
+          />
           <div
             style={{
               fontSize: "11px",

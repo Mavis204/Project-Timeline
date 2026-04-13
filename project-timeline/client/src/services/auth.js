@@ -97,3 +97,19 @@ export async function getMe() {
     return null;
   }
 }
+
+/**
+ * Delete the currently logged-in account.
+ * @returns {Promise<void>}
+ */
+export async function deleteAccount() {
+  const res = await fetch(`${API_BASE}/auth/account`, {
+    method: "DELETE",
+    credentials: "include",
+  });
+
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({}));
+    throw new Error(error.error || "Delete account failed");
+  }
+}

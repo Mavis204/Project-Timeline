@@ -62,6 +62,7 @@ export default function Root() {
   return (
     <App
       user={user}
+      loading={loading}
       onLogout={async () => {
         try {
           await logout();

@@ -225,3 +225,37 @@ exports.getMe = async (req, res) => {
     res.status(500).json({ error: "Failed to get user info" });
   }
 };
+
+exports.deleteAccount = async (req, res) => {
+  try {
+    const userId = req.session?.userId;
+
+    if (!userId) {
+      return res.status(401).json({ error: "Not logged in" });
+    }
+
+    const result = await pool.query(
+      "DELETE FROM users WHERE id = $1 RETURNING id",
+      [userId],
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "Account not found" });
+    }
+
+    req.session.destroy((err) => {
+      if (err) {
+        console.error("[deleteAccount] Session destroy error:", err.message);
+        return res
+          .status(500)
+          .json({ error: "Account deleted but failed to clear session" });
+      }
+
+      res.clearCookie("connect.sid");
+      return res.sendStatus(204);
+    });
+  } catch (err) {
+    console.error("[deleteAccount]", err.message);
+    res.status(500).json({ error: "Failed to delete account" });
+  }
+};

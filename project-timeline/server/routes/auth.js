@@ -20,5 +20,6 @@ router.post("/register", ctrl.register);
 router.post("/login", ctrl.login);
 router.post("/logout", ctrl.logout);
 router.get("/me", ctrl.getMe);
+router.delete("/account", ctrl.deleteAccount);
 
 module.exports = router;

@@ -6,7 +6,7 @@
  * pre-computation of timeline positions.
  */
 
-import { addD, dayType } from './dateUtils';
+import { addD, dayType } from "./dateUtils";
 
 /**
  * Sequential partial-day plotter.
@@ -33,44 +33,47 @@ export function plotPartialDays(slots, plotStart, settings) {
 
   // Advance to first working day
   let safety = 0;
-  while (dayType(cursor, settings) !== 'work' && safety < 30) {
+  while (dayType(cursor, settings) !== "work" && safety < 30) {
     cursor = addD(cursor, 1);
     safety++;
   }
 
   let dayUsed = 0; // hours used in current working day (0–8)
 
-  slots.forEach(slot => {
+  slots.forEach((slot) => {
     if (!slot.hours || slot.hours <= 0) return;
     let rem = slot.hours;
 
     while (rem > 0) {
       const avail = 8 - dayUsed;
-      const used  = Math.min(rem, avail);
-      const sf    = dayUsed / 8;
-      const ef    = (dayUsed + used) / 8;
+      const used = Math.min(rem, avail);
+      const sf = dayUsed / 8;
+      const ef = (dayUsed + used) / 8;
 
       if (!result.has(cursor)) result.set(cursor, []);
       result.get(cursor).push({
-        slotId:     slot.id,
-        startFrac:  sf,
-        endFrac:    ef,
-        color:      slot.color,
-        wtId:       slot.wtId,
-        pId:        slot.pId,
-        slotName:   slot.name,
-        segHours:   used,
+        slotId: slot.id,
+        startFrac: sf,
+        endFrac: ef,
+        color: slot.color,
+        wtId: slot.wtId,
+        pId: slot.pId,
+        slotName: slot.name,
+        g1Label: slot.g1Label,
+        g2Label: slot.g2Label,
+        icon: slot.icon,
+        segHours: used,
         totalHours: slot.hours,
       });
 
-      rem     -= used;
+      rem -= used;
       dayUsed += used;
 
       if (dayUsed >= 8) {
         dayUsed = 0;
-        cursor  = addD(cursor, 1);
+        cursor = addD(cursor, 1);
         let s2 = 0;
-        while (dayType(cursor, settings) !== 'work' && s2 < 30) {
+        while (dayType(cursor, settings) !== "work" && s2 < 30) {
           cursor = addD(cursor, 1);
           s2++;
         }
