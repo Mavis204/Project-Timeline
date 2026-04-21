@@ -56,6 +56,7 @@ import {
   Save,
   Trash2,
   Settings,
+  SlidersHorizontal,
   GitCompare,
   Loader2,
   LogOut,
@@ -79,7 +80,7 @@ import {
   uid,
 } from "./utils/stateManager";
 import { plotPartialDays } from "./utils/plotUtils";
-import { buildSlots, getGroup1Options } from "./utils/slots";
+import { buildSlots, getGroup1Options, getGroup2Options } from "./utils/slots";
 import {
   fmt,
   fmtF,
@@ -102,6 +103,10 @@ import {
   DEF_SETTINGS,
   DEF_TEAM_DATA,
   DEFAULT_TIMELINE_STRUCTURE,
+  DEFAULT_WORK_HOURS_PER_DAY,
+  PLOT_UNITS,
+  TRACKING_MODES,
+  REPRESENTATION_TYPES,
 } from "./constants";
 
 /* ─── DESIGN TOKENS & HELPER STYLES ───────────────────────────────────────── */
@@ -642,6 +647,375 @@ function parseSlotId(slotId) {
   };
 }
 
+function getTrackingMode(settings) {
+  return settings?.trackingMode || TRACKING_MODES.GROUPED;
+}
+
+function getEmptyTask() {
+  return {
+    priorityHours: {},
+    simpleHours: 0,
+    taskItems: [],
+    plotStart: null,
+    notes: [],
+  };
+}
+
+function normalizeTask(task = {}) {
+  return {
+    priorityHours: task.priorityHours || {},
+    simpleHours: Number(task.simpleHours || 0),
+    taskItems: Array.isArray(task.taskItems) ? task.taskItems : [],
+    plotStart: task.plotStart || null,
+    notes: Array.isArray(task.notes) ? task.notes : [],
+  };
+}
+
+function isBlank(v) {
+  return !String(v || "").trim();
+}
+
+function getSettingsValidation(draft) {
+  const mode = getTrackingMode(draft);
+  const structure = draft.timelineStructure || [];
+
+  const group1 = structure[0] || { label: "", options: [] };
+  const group2 = structure[1] || { label: "", options: [] };
+
+  const group2HasRows =
+    Array.isArray(group2.options) && group2.options.length > 0;
+
+  const errors = {
+    trackingMode: false,
+    plotUnit: false,
+    group1Label: false,
+    group2Label: false,
+    group1OptionsMissing: false,
+    group1Options: [],
+    group2Options: [],
+  };
+
+  errors.trackingMode = isBlank(draft.trackingMode);
+  errors.plotUnit = isBlank(draft.plotUnit);
+
+  if (mode !== TRACKING_MODES.SIMPLE) {
+    errors.group1Label = isBlank(group1.label);
+
+    if (!Array.isArray(group1.options) || group1.options.length === 0) {
+      errors.group1OptionsMissing = true;
+    } else {
+      errors.group1Options = group1.options.map((opt) => isBlank(opt.label));
+    }
+
+    if (group2HasRows) {
+      errors.group2Label = isBlank(group2.label);
+      errors.group2Options = group2.options.map((opt) => isBlank(opt.label));
+    }
+  }
+
+  const hasErrors =
+    errors.trackingMode ||
+    errors.plotUnit ||
+    errors.group1Label ||
+    errors.group2Label ||
+    errors.group1OptionsMissing ||
+    errors.group1Options.includes(true) ||
+    errors.group2Options.includes(true);
+
+  return { errors, hasErrors };
+}
+
+function hasSecondGroup(structure = []) {
+  return (
+    Array.isArray(structure?.[1]?.options) && structure[1].options.length > 0
+  );
+}
+
+function createEmptyOption(groupIndex, optionIndex, representation = "color") {
+  return {
+    id: `opt_${groupIndex}_${Date.now()}_${optionIndex}`,
+    label: "",
+    order: optionIndex,
+    ...(representation === REPRESENTATION_TYPES.COLOR
+      ? { color: "#94a3b8", texture: "solid" }
+      : representation === REPRESENTATION_TYPES.ICON
+        ? { icon: "circle", color: "#94a3b8", texture: "solid" }
+        : { texture: "solid", color: "#94a3b8" }),
+  };
+}
+
+function getTextureBackground(texture = "solid", color = "#94a3b8") {
+  const pattern = "rgba(255,255,255,0.45)";
+
+  switch (texture) {
+    case "dots":
+      return {
+        backgroundColor: color,
+        backgroundImage: `radial-gradient(${pattern} 18%, transparent 19%)`,
+        backgroundSize: "8px 8px",
+      };
+
+    case "diagonal":
+      return {
+        backgroundColor: color,
+        backgroundImage: `repeating-linear-gradient(
+          45deg,
+          transparent,
+          transparent 4px,
+          ${pattern} 4px,
+          ${pattern} 6px
+        )`,
+      };
+
+    case "crosshatch":
+      return {
+        backgroundColor: color,
+        backgroundImage: `
+          repeating-linear-gradient(
+            45deg,
+            transparent,
+            transparent 4px,
+            ${pattern} 4px,
+            ${pattern} 6px
+          ),
+          repeating-linear-gradient(
+            -45deg,
+            transparent,
+            transparent 4px,
+            ${pattern} 4px,
+            ${pattern} 6px
+          )
+        `,
+      };
+
+    case "horizontal":
+      return {
+        backgroundColor: color,
+        backgroundImage: `repeating-linear-gradient(
+          0deg,
+          transparent,
+          transparent 4px,
+          ${pattern} 4px,
+          ${pattern} 6px
+        )`,
+      };
+
+    case "vertical":
+      return {
+        backgroundColor: color,
+        backgroundImage: `repeating-linear-gradient(
+          90deg,
+          transparent,
+          transparent 4px,
+          ${pattern} 4px,
+          ${pattern} 6px
+        )`,
+      };
+
+    case "checker":
+      return {
+        backgroundColor: color,
+        backgroundImage: `
+          linear-gradient(45deg, ${pattern} 25%, transparent 25%),
+          linear-gradient(-45deg, ${pattern} 25%, transparent 25%),
+          linear-gradient(45deg, transparent 75%, ${pattern} 75%),
+          linear-gradient(-45deg, transparent 75%, ${pattern} 75%)
+        `,
+        backgroundSize: "10px 10px",
+        backgroundPosition: "0 0, 0 5px, 5px -5px, -5px 0px",
+      };
+
+    case "solid":
+    default:
+      return {
+        backgroundColor: color,
+      };
+  }
+}
+
+/**
+ * TimelineCell - Layered visual rendering for slots
+ * Combines: base color + texture layer + icon overlay
+ */
+function TimelineCell({ slot }) {
+  const color = slot.color || "#94a3b8";
+  const texture = slot.texture || "solid";
+  const icon = slot.icon || null;
+
+  return (
+    <div
+      style={{
+        width: "100%",
+        height: "100%",
+        borderRadius: 6,
+        position: "relative",
+        overflow: "hidden",
+
+        // 🔥 THIS IS THE FIX
+        ...getTextureBackground(texture, color),
+      }}
+    >
+      {/* ICON LAYER */}
+      {icon && (
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 2,
+            color: "#fff",
+            pointerEvents: "none",
+          }}
+        >
+          <WtIcon icon={icon} size={12} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TextureSwatch({ texture = "solid", color = "#94a3b8" }) {
+  return (
+    <div
+      style={{
+        width: "100%",
+        height: 100,
+        borderRadius: 8,
+        border: "1px solid rgba(15,23,42,0.10)",
+        ...getTextureBackground(texture, color),
+      }}
+    />
+  );
+}
+
+function getProjectTotalHours(task = {}, settings) {
+  const mode = getTrackingMode(settings);
+
+  if (mode === TRACKING_MODES.SIMPLE) {
+    return Number(task?.simpleHours || 0);
+  }
+
+  if (mode === TRACKING_MODES.TASK) {
+    return (task?.taskItems || []).reduce(
+      (sum, item) => sum + (Number(item?.hours) || 0),
+      0,
+    );
+  }
+
+  return Object.values(task?.priorityHours || {}).reduce(
+    (sum, value) => sum + (Number(value) || 0),
+    0,
+  );
+}
+
+function getTimelineSummary(tasks = {}, settings) {
+  let totalHours = 0;
+  let projectCountWithHours = 0;
+
+  Object.values(tasks || {}).forEach((task) => {
+    const total = getProjectTotalHours(task, settings);
+    totalHours += total;
+    if (total > 0) projectCountWithHours += 1;
+  });
+
+  return {
+    totalHours,
+    projectCountWithHours,
+    hasHours: totalHours > 0,
+  };
+}
+
+function buildPrimaryColorMap(settings) {
+  const slots = buildSlots(
+    settings?.timelineStructure || DEFAULT_TIMELINE_STRUCTURE,
+  );
+  const map = {};
+
+  slots.forEach((slot) => {
+    const primaryId = slot.g1Id;
+    if (primaryId && !map[primaryId]) {
+      map[primaryId] = slot.color || "#94a3b8";
+    }
+  });
+
+  return map;
+}
+
+function getGroupedBreakdown(priorityHours = {}, settings) {
+  const slots = buildSlots(
+    settings?.timelineStructure || DEFAULT_TIMELINE_STRUCTURE,
+  );
+  const slotToPrimary = {};
+  const colorMap = buildPrimaryColorMap(settings);
+
+  slots.forEach((slot) => {
+    slotToPrimary[slot.id] = slot.g1Id;
+  });
+
+  const grouped = {};
+  Object.entries(priorityHours || {}).forEach(([slotId, rawValue]) => {
+    const hours = Number(rawValue) || 0;
+    if (hours <= 0) return;
+    const primaryId = slotToPrimary[slotId];
+    if (!primaryId) return;
+    grouped[primaryId] = (grouped[primaryId] || 0) + hours;
+  });
+
+  return Object.entries(grouped).map(([primaryId, value]) => ({
+    primaryId,
+    value,
+    color: colorMap[primaryId] || "#94a3b8",
+  }));
+}
+
+function toHours(value, settings) {
+  const unit = settings.plotUnit || PLOT_UNITS.HOURS;
+  const hpd = settings.workHoursPerDay || DEFAULT_WORK_HOURS_PER_DAY;
+
+  if (unit === PLOT_UNITS.DAYS) return Number(value) * hpd;
+  if (unit === PLOT_UNITS.WEEKS) return Number(value) * hpd * 5;
+
+  return Number(value);
+}
+
+function fromHours(value, settings) {
+  const unit = settings.plotUnit || PLOT_UNITS.HOURS;
+  const hpd = settings.workHoursPerDay || DEFAULT_WORK_HOURS_PER_DAY;
+
+  if (unit === PLOT_UNITS.DAYS) return value / hpd;
+  if (unit === PLOT_UNITS.WEEKS) return value / (hpd * 5);
+
+  return value;
+}
+
+function hasCategory1Options(settings) {
+  return (
+    settings?.timelineStructure?.[0]?.options &&
+    settings.timelineStructure[0].options.length > 0
+  );
+}
+
+function handleCategoryGuard(settings, openModal) {
+  if (!hasCategory1Options(settings)) {
+    openModal();
+    return false;
+  }
+  return true;
+}
+
+function clearTaskEntries(task = {}) {
+  const normalized = normalizeTask(task);
+  return {
+    ...normalized,
+    priorityHours: {},
+    simpleHours: 0,
+    taskItems: [],
+    notes: [],
+  };
+}
+
 /* ─── Reusable AppButton Component ──────────────────────────────────────── */
 function AppButton({
   children,
@@ -1028,6 +1402,22 @@ const ICON_OPTIONS = [
   { value: "redo", label: "Redo" },
 ];
 
+const REPRESENTATION_OPTIONS = [
+  { value: REPRESENTATION_TYPES.COLOR, label: "Color" },
+  { value: REPRESENTATION_TYPES.ICON, label: "Icon" },
+  { value: REPRESENTATION_TYPES.TEXTURE, label: "Texture" },
+];
+
+const TEXTURE_OPTIONS = [
+  { value: "solid", label: "Solid" },
+  { value: "dots", label: "Dots" },
+  { value: "diagonal", label: "Diagonal" },
+  { value: "crosshatch", label: "Crosshatch" },
+  { value: "horizontal", label: "Horizontal" },
+  { value: "vertical", label: "Vertical" },
+  { value: "checker", label: "Checker" },
+];
+
 function WtIcon({ icon, size = 12 }) {
   if (!icon) return null;
   const Icon = ICON_MAP[icon];
@@ -1154,8 +1544,9 @@ const ghostBtn = {
   cursor: "pointer",
 };
 
-const GROUP_GRID_COLOR = "minmax(0, 1fr) 140px 120px";
-const GROUP_GRID_ICON = "minmax(0, 1fr) 140px 120px";
+const GROUP_GRID_COLOR = "minmax(0, 1fr) 220px 160px";
+const GROUP_GRID_ICON = "minmax(0, 1fr) 220px 160px";
+const GROUP_GRID_TEXTURE = "minmax(0, 1fr) 260px 160px";
 
 const settingsLabelStyle = {
   fontSize: 11,
@@ -1203,6 +1594,16 @@ const settingsSelectStyle = {
   appearance: "none",
   WebkitAppearance: "none",
   MozAppearance: "none",
+};
+
+const inputStyle = {
+  height: 42,
+  borderRadius: 12,
+  border: "1px solid #e5e7eb",
+  padding: "0 12px",
+  fontSize: 14,
+  boxSizing: "border-box",
+  background: "#fff",
 };
 
 const settingsSelectWrap = {
@@ -1289,6 +1690,55 @@ const settingsColorNativeInput = {
   height: "100%",
   opacity: 0,
   cursor: "pointer",
+};
+
+const requiredAsterisk = {
+  color: "#dc2626",
+  marginLeft: 4,
+  fontWeight: 800,
+};
+
+const settingsInputErrorStyle = {
+  border: "1px solid #fca5a5",
+  background: "#fffafa",
+};
+
+const settingsFieldErrorText = {
+  fontSize: 12,
+  color: "#b91c1c",
+  marginTop: 6,
+  lineHeight: 1.5,
+};
+
+const settingsTextureField = {
+  display: "grid",
+  gridTemplateRows: "46px",
+  alignItems: "center",
+  width: "100%",
+};
+
+const settingsTexturePreviewInline = {
+  width: "100%",
+  height: 46,
+  borderRadius: 12,
+  border: "1px solid #e5e7eb",
+  background: "#fff",
+  boxSizing: "border-box",
+  padding: 6,
+  overflow: "hidden",
+};
+
+const settingsTexturePreviewInner = {
+  width: "100%",
+  height: "100%",
+  borderRadius: 8,
+  border: "1px solid rgba(15,23,42,0.10)",
+  boxSizing: "border-box",
+};
+
+const settingsTextureSelectCompact = {
+  ...settingsSelectStyle,
+  padding: "0 38px 0 12px",
 };
 
 /* ─── REUSABLE DASHBOARD STYLES ──────────────────────────────────────────── */
@@ -1583,6 +2033,7 @@ function App({ user, loading, onLogout }) {
   }, [appLoading]);
 
   const [modal, setModal] = useState(null);
+  const [showCategoryModal, setShowCategoryModal] = useState(false);
   const [mdata, setMdata] = useState(null);
   const [tooltip, setTooltip] = useState(null);
   const histRef = useRef([]);
@@ -1745,10 +2196,11 @@ function App({ user, loading, onLogout }) {
       const pt = tl.tasks[p.id] || {};
       const ps = pt.plotStart || tlStart;
       if (ps < minStart) minStart = ps;
-      const ph = pt.priorityHours || {};
+      const mode = getTrackingMode(settings);
+      const ph = mode === TRACKING_MODES.GROUPED ? pt.priorityHours || {} : {};
       const slots = dynSlots
-        .filter((s) => ph[s.id] > 0)
-        .map((s) => ({ ...s, hours: ph[s.id] }));
+        .filter((s) => Number(ph[s.id]) > 0)
+        .map((s) => ({ ...s, hours: Number(ph[s.id]) || 0 }));
       const segMap = plotPartialDays(slots, ps, settings);
       if (segMap.size) {
         const last = [...segMap.keys()].sort().pop();
@@ -1806,10 +2258,11 @@ function App({ user, loading, onLogout }) {
     projects.forEach((p) => {
       const pt = tl.tasks[p.id] || {};
       const ps = pt.plotStart || tl.plotStart;
-      const ph = pt.priorityHours || {};
+      const mode = getTrackingMode(settings);
+      const ph = mode === TRACKING_MODES.GROUPED ? pt.priorityHours || {} : {};
       const slots = dynSlots
-        .filter((s) => ph[s.id] > 0)
-        .map((s) => ({ ...s, hours: ph[s.id] }));
+        .filter((s) => Number(ph[s.id]) > 0)
+        .map((s) => ({ ...s, hours: Number(ph[s.id]) || 0 }));
       const segMap = plotPartialDays(slots, ps, settings);
       const noteDateMap = {};
       (pt.notes || []).forEach((n) => {
@@ -1890,11 +2343,15 @@ function App({ user, loading, onLogout }) {
     }
   }
 
-  function doSaveTask(pid, priorityHours, plotStart) {
+  function doSaveTask(pid, payload, plotStart) {
     if (isViewingArchive) return;
     setIsDirty(true);
+
     updTD((td) => {
-      const prev = td.currentTimeline?.tasks?.[pid] || {};
+      const prev = normalizeTask(
+        td.currentTimeline?.tasks?.[pid] || getEmptyTask(),
+      );
+
       return {
         ...td,
         currentTimeline: {
@@ -1903,13 +2360,16 @@ function App({ user, loading, onLogout }) {
             ...td.currentTimeline.tasks,
             [pid]: {
               ...prev,
-              priorityHours: priorityHours || {},
+              priorityHours: payload.priorityHours || {},
+              simpleHours: Number(payload.simpleHours || 0),
+              taskItems: payload.taskItems || [],
               plotStart: plotStart || null,
             },
           },
         },
       };
     });
+
     setModal(null);
   }
   function doAddProject(proj) {
@@ -2096,17 +2556,45 @@ function App({ user, loading, onLogout }) {
     });
     setModal(null);
   }
-  function doSaveSettings(ns) {
-    upd((p) => ({
-      ...p,
-      teamData: {
-        ...p.teamData,
-        [p.activeTeamId]: {
-          ...(p.teamData[p.activeTeamId] || {}),
-          settings: ns,
+  function doSaveSettings(ns, opts = {}) {
+    const clearTrackingData = Boolean(opts.clearTrackingData);
+
+    upd((p) => {
+      const activeId = p.activeTeamId;
+      const currentTD = p.teamData[activeId] || {};
+
+      const clearTimeline = (timeline) => ({
+        ...timeline,
+        tasks: Object.fromEntries(
+          Object.entries(timeline?.tasks || {}).map(([pid, task]) => [
+            pid,
+            clearTaskEntries(task),
+          ]),
+        ),
+      });
+
+      return {
+        ...p,
+        teamData: {
+          ...p.teamData,
+          [activeId]: {
+            ...currentTD,
+            settings: ns,
+            currentTimeline: clearTrackingData
+              ? clearTimeline(currentTD.currentTimeline || mkTL())
+              : currentTD.currentTimeline,
+            archives: clearTrackingData
+              ? (currentTD.archives || []).map(clearTimeline)
+              : currentTD.archives,
+            trash: clearTrackingData
+              ? (currentTD.trash || []).map(clearTimeline)
+              : currentTD.trash,
+          },
         },
-      },
-    }));
+      };
+    });
+
+    Object.keys(_plotDrafts).forEach((k) => delete _plotDrafts[k]);
     setModal(null);
   }
 
@@ -2288,6 +2776,13 @@ function App({ user, loading, onLogout }) {
   );
 
   function openEdit(pid) {
+    const hasCategory1 = settings.timelineStructure?.[0]?.options?.length > 0;
+
+    if (!hasCategory1) {
+      setShowCategoryModal(true);
+      return;
+    }
+
     setMdata({ pid });
     setModal("task");
   }
@@ -2399,6 +2894,14 @@ function App({ user, loading, onLogout }) {
               />
             )}
 
+            {modal === "settings" && (
+              <SettingsModal
+                settings={settings}
+                onClose={() => setModal(null)}
+                onSave={doSaveSettings}
+              />
+            )}
+
             {modal === "addTeam" && (
               <AddWorkspaceModal
                 onClose={() => setModal(null)}
@@ -2459,7 +2962,7 @@ function App({ user, loading, onLogout }) {
           isSaving={isSaving}
           justSaved={justSaved}
           onCompare={() => setModal("compare")}
-          onSettings={() => setModal("settings")}
+          onSettings={null}
           plotStart={tl.plotStart}
           canUndo={canUndo && !isViewingArchive}
           onUndo={undo}
@@ -2718,11 +3221,15 @@ function App({ user, loading, onLogout }) {
             globalStart={tl.plotStart}
             settings={settings}
             onClose={() => setModal(null)}
-            onSave={(ph, ps) => doSaveTask(mdata.pid, ph, ps)}
+            onSave={(payload, ps) => doSaveTask(mdata.pid, payload, ps)}
             onAddNote={(n) => doAddNote(mdata.pid, n)}
             onDelNote={(nid) => doDelNote(mdata.pid, nid)}
             onEditNote={(n) => doEditNote(mdata.pid, n)}
+            onShowCategoryModal={() => setShowCategoryModal(true)}
           />
+        )}
+        {showCategoryModal && (
+          <CategoryRequiredModal onClose={() => setShowCategoryModal(false)} />
         )}
         {modal === "editNote" && mdata && !isViewingArchive && (
           <EditNoteModal
@@ -2872,17 +3379,27 @@ function DashboardScreen({
   onConfirmNewTimeline,
 }) {
   /* ─── HELPER: Calculate timeline summary ─────────────────────────────────── */
-  function getTimelineSummary(tasks = {}) {
+  function getTotal(task, settings) {
+    const mode = settings?.trackingMode;
+
+    if (mode === "simple") return task?.simpleHours || 0;
+
+    if (mode === "task")
+      return (task?.taskItems || []).reduce((s, t) => s + (t.hours || 0), 0);
+
+    return Object.values(task?.priorityHours || {}).reduce(
+      (s, v) => s + (Number(v) || 0),
+      0,
+    );
+  }
+
+  function getTimelineSummary(tasks = {}, settings) {
     const projectIds = Object.keys(tasks || {});
     let totalHours = 0;
     let projectCountWithHours = 0;
 
     projectIds.forEach((pid) => {
-      const priorityHours = tasks?.[pid]?.priorityHours || {};
-      const projectHours = Object.values(priorityHours).reduce(
-        (sum, h) => sum + (Number(h) || 0),
-        0,
-      );
+      const projectHours = getTotal(tasks?.[pid], settings);
 
       totalHours += projectHours;
 
@@ -3138,7 +3655,7 @@ function DashboardScreen({
                 textAlign: "right",
               }}
             >
-              {item.total}h
+              {fromHours(item.total, settings).toFixed(1)} {settings.plotUnit}
             </div>
           </div>
         ))}
@@ -3285,7 +3802,9 @@ function DashboardScreen({
               </span>
             </div>
 
-            <span style={{ color: "#64748b" }}>{item.total}h</span>
+            <span style={{ color: "#64748b" }}>
+              {fromHours(item.total, settings).toFixed(1)} {settings.plotUnit}
+            </span>
           </div>
         ))}
       </div>
@@ -3530,126 +4049,135 @@ function DashboardScreen({
           flexShrink: 0,
         }}
       >
-        <div style={{ position: "relative" }}>
-          <button
-            onClick={() => setTeamOpen((o) => !o)}
-            style={{
-              ...dashBtnSecondary,
-              minWidth: 94,
-              justifyContent: "space-between",
-              padding: "0 12px",
-            }}
-          >
-            <span
-              style={{ display: "inline-flex", alignItems: "center", gap: 8 }}
-            >
-              <span
-                style={{
-                  width: 9,
-                  height: 9,
-                  borderRadius: 999,
-                  background: "#4f46e5",
-                  display: "inline-block",
-                }}
-              />
-              {activeTeam?.name}
-            </span>
-            <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-              <path
-                d="M2.5 4.5L6 8L9.5 4.5"
-                stroke="#94a3b8"
-                strokeWidth="1.5"
-                strokeLinecap="round"
-              />
-            </svg>
-          </button>
-
-          {teamOpen && (
-            <div
+        {/* LEFT: Team dropdown + Settings */}
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 12,
+          }}
+        >
+          <div style={{ position: "relative" }}>
+            <button
+              onClick={() => setTeamOpen((o) => !o)}
               style={{
-                position: "absolute",
-                top: "calc(100% + 8px)",
-                left: 0,
-                background: "#fff",
-                border: "1px solid #e5e7eb",
+                height: 40,
+                padding: "0 14px",
                 borderRadius: 12,
-                boxShadow: "0 12px 32px rgba(15,23,42,0.10)",
-                zIndex: 200,
-                minWidth: 220,
-                padding: 8,
+                border: "1px solid #e5e7eb",
+                background: "#fff",
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 8,
+                cursor: "pointer",
+                fontWeight: 600,
+                color: "#0f172a",
               }}
             >
-              {teams.map((t) => (
+              <div
+                style={{
+                  width: 8,
+                  height: 8,
+                  borderRadius: 999,
+                  background: "#6366f1",
+                }}
+              />
+              {activeTeam?.name || "Workspace"}
+              <span style={{ marginLeft: 4, color: "#94a3b8" }}>▾</span>
+            </button>
+
+            {teamOpen && (
+              <div
+                style={{
+                  position: "absolute",
+                  top: "calc(100% + 8px)",
+                  left: 0,
+                  background: "#fff",
+                  border: "1px solid #e5e7eb",
+                  borderRadius: 12,
+                  boxShadow: "0 12px 32px rgba(15,23,42,0.10)",
+                  zIndex: 200,
+                  minWidth: 220,
+                  padding: 8,
+                }}
+              >
+                {teams.map((t) => (
+                  <div
+                    key={t.id}
+                    onClick={() => {
+                      onSwitchTeam(t.id);
+                      setTeamOpen(false);
+                    }}
+                    style={{
+                      padding: "10px 12px",
+                      borderRadius: 10,
+                      cursor: "pointer",
+                      fontSize: 13,
+                      fontWeight: t.id === activeTeamId ? 700 : 500,
+                      color: t.id === activeTeamId ? BRAND.primary : "#0f172a",
+                      background:
+                        t.id === activeTeamId ? "#eef2ff" : "transparent",
+                    }}
+                  >
+                    {t.id === activeTeamId ? "✓ " : ""}
+                    {t.name}
+                  </div>
+                ))}
+
                 <div
-                  key={t.id}
+                  style={{
+                    height: 1,
+                    background: "#e5e7eb",
+                    margin: "8px 0",
+                  }}
+                />
+
+                <button
                   onClick={() => {
-                    onSwitchTeam(t.id);
+                    onAddTeam();
                     setTeamOpen(false);
                   }}
                   style={{
-                    padding: "10px 12px",
+                    width: "100%",
+                    height: 40,
                     borderRadius: 10,
-                    cursor: "pointer",
+                    border: "1px solid #c7d2fe",
+                    background: "#eef2ff",
+                    color: BRAND.primary,
                     fontSize: 13,
-                    fontWeight: t.id === activeTeamId ? 700 : 500,
-                    color: t.id === activeTeamId ? BRAND.primary : "#0f172a",
-                    background:
-                      t.id === activeTeamId ? "#eef2ff" : "transparent",
+                    fontWeight: 700,
+                    cursor: "pointer",
+                    textAlign: "left",
+                    padding: "0 12px",
+                    transition: "all .18s cubic-bezier(.4,0,.2,1)",
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.background = "#dbeafe";
+                    e.currentTarget.style.borderColor = BRAND.primary;
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.background = "#eef2ff";
+                    e.currentTarget.style.borderColor = "#c7d2fe";
+                  }}
+                  onMouseDown={(e) => {
+                    e.currentTarget.style.background = "#c7d2fe";
+                    e.currentTarget.style.transform = "scale(0.98)";
+                  }}
+                  onMouseUp={(e) => {
+                    e.currentTarget.style.background = "#dbeafe";
+                    e.currentTarget.style.transform = "scale(1)";
                   }}
                 >
-                  {t.id === activeTeamId ? "✓ " : ""}
-                  {t.name}
-                </div>
-              ))}
+                  + Add Workspace
+                </button>
+              </div>
+            )}
+          </div>
 
-              <div
-                style={{
-                  height: 1,
-                  background: "#e5e7eb",
-                  margin: "8px 0",
-                }}
-              />
-
-              <button
-                onClick={() => {
-                  onAddTeam();
-                  setTeamOpen(false);
-                }}
-                style={{
-                  width: "100%",
-                  height: 40,
-                  borderRadius: 10,
-                  border: "1px solid #c7d2fe",
-                  background: "#eef2ff",
-                  color: BRAND.primary,
-                  fontSize: 13,
-                  fontWeight: 700,
-                  cursor: "pointer",
-                  textAlign: "left",
-                  padding: "0 12px",
-                  transition: "all .18s cubic-bezier(.4,0,.2,1)",
-                }}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.background = "#dbeafe";
-                  e.currentTarget.style.borderColor = BRAND.primary;
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.background = "#eef2ff";
-                  e.currentTarget.style.borderColor = "#c7d2fe";
-                }}
-                onMouseDown={(e) => {
-                  e.currentTarget.style.background = "#c7d2fe";
-                  e.currentTarget.style.transform = "scale(0.98)";
-                }}
-                onMouseUp={(e) => {
-                  e.currentTarget.style.background = "#dbeafe";
-                  e.currentTarget.style.transform = "scale(1)";
-                }}
-              >
-                + Add Workspace
-              </button>
-            </div>
-          )}
+          <AppButton variant="secondary" onClick={() => setModal("settings")}>
+            <SlidersHorizontal size={16} />
+            Settings
+          </AppButton>
         </div>
 
         <div style={{ flex: 1 }} />
@@ -3961,7 +4489,7 @@ function DashboardScreen({
                   ),
                 ).length;
                 const isEditing = renamingId === card.id;
-                const summary = getTimelineSummary(card.tasks);
+                const summary = getTimelineSummary(card.tasks, settings);
 
                 return (
                   <div
@@ -4254,34 +4782,38 @@ function Header({
           </svg>
           {APP_STRINGS.actions.compare}
         </AppButton>
-        <div style={toolbarDivider} />
-        <button
-          onClick={onSettings}
-          style={iconBtn}
-          title="Settings"
-          onMouseEnter={(e) => {
-            e.currentTarget.style.background = "#f1f5f9";
-            e.currentTarget.style.borderColor = "#cbd5e1";
-            e.currentTarget.style.color = "var(--text)";
-            e.currentTarget.style.transform = "translateY(-1px)";
-          }}
-          onMouseLeave={(e) => {
-            e.currentTarget.style.background = "#fff";
-            e.currentTarget.style.borderColor = UI.color.border;
-            e.currentTarget.style.color = UI.color.text2;
-            e.currentTarget.style.transform = "translateY(0)";
-          }}
-          onMouseDown={(e) => {
-            e.currentTarget.style.background = "#e0e7ff";
-            e.currentTarget.style.transform = "translateY(1px) scale(0.98)";
-          }}
-          onMouseUp={(e) => {
-            e.currentTarget.style.background = "#f1f5f9";
-            e.currentTarget.style.transform = "translateY(-1px)";
-          }}
-        >
-          <Settings size={16} />
-        </button>
+        {onSettings && (
+          <>
+            <div style={toolbarDivider} />
+            <button
+              onClick={onSettings}
+              style={iconBtn}
+              title="Settings"
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = "#f1f5f9";
+                e.currentTarget.style.borderColor = "#cbd5e1";
+                e.currentTarget.style.color = "var(--text)";
+                e.currentTarget.style.transform = "translateY(-1px)";
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = "#fff";
+                e.currentTarget.style.borderColor = UI.color.border;
+                e.currentTarget.style.color = UI.color.text2;
+                e.currentTarget.style.transform = "translateY(0)";
+              }}
+              onMouseDown={(e) => {
+                e.currentTarget.style.background = "#e0e7ff";
+                e.currentTarget.style.transform = "translateY(1px) scale(0.98)";
+              }}
+              onMouseUp={(e) => {
+                e.currentTarget.style.background = "#f1f5f9";
+                e.currentTarget.style.transform = "translateY(-1px)";
+              }}
+            >
+              <Settings size={16} />
+            </button>
+          </>
+        )}
       </div>
 
       {/* RIGHT: Undo/Redo, Clear, Save */}
@@ -5188,7 +5720,6 @@ function TimelineGrid({
                                   width: `${wPct}%`,
                                   top: 3,
                                   bottom: 3,
-                                  background: seg.color,
                                   zIndex: 2,
                                   cursor: "pointer",
                                   borderRadius:
@@ -5215,25 +5746,7 @@ function TimelineGrid({
                                 onMouseLeave={() => setTooltip(null)}
                                 onClick={() => onEditProject(p.id)}
                               >
-                                {isSegFirst && CW >= 16 && (
-                                  <span
-                                    style={{
-                                      position: "absolute",
-                                      top: "50%",
-                                      transform: "translateY(-50%)",
-                                      left: 2,
-                                      color: "rgba(255,255,255,0.95)",
-                                      display: "flex",
-                                      alignItems: "center",
-                                      pointerEvents: "none",
-                                    }}
-                                  >
-                                    <WtIcon
-                                      icon={seg.icon}
-                                      size={Math.min(RH - 8, 14)}
-                                    />
-                                  </span>
-                                )}
+                                <TimelineCell slot={seg} />
                               </div>
                             );
                           })}
@@ -6825,6 +7338,902 @@ function NoteList({ notes, onDelete, onEdit }) {
 // Draft cache so data persists even if modal is closed and reopened
 const _plotDrafts = {};
 
+// Simple mode editor
+function SimpleEditor({ value, onChange }) {
+  return (
+    <div style={{ display: "grid", gap: 10 }}>
+      <div style={{ fontWeight: 700 }}>Total Hours</div>
+
+      <input
+        type="number"
+        min="0"
+        step="0.5"
+        value={value || 0}
+        onChange={(e) => onChange(Number(e.target.value) || 0)}
+        style={{
+          height: 44,
+          borderRadius: 12,
+          border: "1px solid #e5e7eb",
+          padding: "0 14px",
+        }}
+      />
+    </div>
+  );
+}
+
+// Task mode editor
+function TaskEditor({ items = [], onChange }) {
+  function update(i, patch) {
+    const next = items.map((it, idx) => (idx === i ? { ...it, ...patch } : it));
+    onChange(next);
+  }
+
+  function add() {
+    onChange([...items, { id: Date.now(), name: "", hours: 0 }]);
+  }
+
+  function remove(i) {
+    onChange(items.filter((_, idx) => idx !== i));
+  }
+
+  return (
+    <div style={{ display: "grid", gap: 10 }}>
+      {items.map((item, i) => (
+        <div
+          key={item.id}
+          style={{
+            display: "grid",
+            gridTemplateColumns: "1fr 100px 80px",
+            gap: 10,
+          }}
+        >
+          <input
+            value={item.name}
+            placeholder="Task name"
+            onChange={(e) => update(i, { name: e.target.value })}
+            style={{
+              height: 40,
+              borderRadius: 12,
+              border: "1px solid #e5e7eb",
+              padding: "0 12px",
+            }}
+          />
+
+          <input
+            type="number"
+            value={item.hours}
+            onChange={(e) => update(i, { hours: Number(e.target.value) || 0 })}
+            style={{
+              height: 40,
+              borderRadius: 12,
+              border: "1px solid #e5e7eb",
+              padding: "0 12px",
+            }}
+          />
+
+          <button
+            onClick={() => remove(i)}
+            style={{
+              height: 40,
+              borderRadius: 12,
+              border: "1px solid #fca5a5",
+              background: "#ffe4e4",
+              color: "#991b1b",
+              fontWeight: 600,
+              cursor: "pointer",
+            }}
+          >
+            Remove
+          </button>
+        </div>
+      ))}
+
+      <button
+        onClick={add}
+        style={{
+          height: 40,
+          borderRadius: 12,
+          border: "1px solid #e5e7eb",
+          background: "#f8fafc",
+          color: "#64748b",
+          fontWeight: 600,
+          cursor: "pointer",
+        }}
+      >
+        + Add Task
+      </button>
+    </div>
+  );
+}
+
+function TrackingModeBadge({ mode }) {
+  const labels = {
+    [TRACKING_MODES.SIMPLE]: "Simple",
+    [TRACKING_MODES.GROUPED]: "Grouped",
+    [TRACKING_MODES.TASK]: "Task",
+  };
+
+  return (
+    <span
+      style={{
+        fontSize: 11,
+        fontWeight: 700,
+        color: "#475569",
+        background: "#f8fafc",
+        border: "1px solid #e5e7eb",
+        borderRadius: 999,
+        padding: "6px 10px",
+      }}
+    >
+      {labels[mode] || "Grouped"}
+    </span>
+  );
+}
+
+function CategoryRequiredModal({ onClose }) {
+  return (
+    <Modal title="Setup Required" onClose={onClose} width={420}>
+      <div style={{ display: "grid", gap: 14 }}>
+        <div
+          style={{
+            background: "#fff7ed",
+            border: "1px solid #fed7aa",
+            borderRadius: 12,
+            padding: 12,
+            fontSize: 13,
+            color: "#9a3412",
+          }}
+        >
+          Please create at least one option in Category 1 before plotting hours.
+        </div>
+
+        <div style={{ display: "flex", justifyContent: "flex-end" }}>
+          <AppButton variant="primary" onClick={onClose}>
+            Got it
+          </AppButton>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function ModeChangeWarningModal({ nextMode, onCancel, onConfirm }) {
+  const labelMap = {
+    [TRACKING_MODES.SIMPLE]: "Simple",
+    [TRACKING_MODES.GROUPED]: "Grouped",
+    [TRACKING_MODES.TASK]: "Task",
+  };
+
+  return (
+    <Modal title="Change Tracking Mode" onClose={onCancel} width={460}>
+      <div style={{ display: "grid", gap: 14 }}>
+        <div
+          style={{
+            background: "#fff7ed",
+            border: "1px solid #fed7aa",
+            borderRadius: 12,
+            padding: 12,
+            fontSize: 13,
+            color: "#9a3412",
+            lineHeight: 1.6,
+          }}
+        >
+          Switching to <b>{labelMap[nextMode]}</b> will clear all existing
+          timeline entries in this workspace because the input structure will no
+          longer match.
+        </div>
+
+        <div style={{ fontSize: 13, color: "#64748b", lineHeight: 1.6 }}>
+          Project names, timeline names, and dates stay. Logged hours, grouped
+          entries, and task-item rows will be reset.
+        </div>
+
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+          <AppButton variant="secondary" onClick={onCancel}>
+            Cancel
+          </AppButton>
+          <AppButton variant="danger" onClick={onConfirm}>
+            Change Mode and Clear Data
+          </AppButton>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function SimpleHoursEditor({
+  value,
+  onChange,
+  onBlockInput,
+  settings,
+  setShowCategoryModal,
+}) {
+  return (
+    <div style={{ display: "grid", gap: 10 }}>
+      <div style={{ fontSize: 13, fontWeight: 700, color: "#334155" }}>
+        Total ({settings?.plotUnit || PLOT_UNITS.HOURS})
+      </div>
+      <input
+        type="number"
+        min="0"
+        step="0.5"
+        value={fromHours(value ?? 0, settings) || ""}
+        onFocus={(e) => {
+          if (
+            !handleCategoryGuard(settings, () => setShowCategoryModal(true))
+          ) {
+            e.target.blur();
+          }
+        }}
+        onChange={(e) => {
+          if (!hasCategory1Options(settings)) return;
+
+          onChange(toHours(e.target.value, settings));
+        }}
+        style={{
+          width: "100%",
+          height: 44,
+          borderRadius: 12,
+          border: "1px solid #e5e7eb",
+          padding: "0 14px",
+          fontSize: 14,
+          color: "#0f172a",
+          background: "#fff",
+          outline: "none",
+          boxSizing: "border-box",
+        }}
+      />
+    </div>
+  );
+}
+
+function GroupedHoursEditor({
+  settings,
+  value,
+  onChange,
+  onBlockInput,
+  setShowCategoryModal,
+}) {
+  const structure = settings.timelineStructure || DEFAULT_TIMELINE_STRUCTURE;
+  const group1 = getGroup1Options(structure);
+  const group2 = getGroup2Options(structure);
+  const slots = buildSlots(structure);
+
+  const hasSubgroup = group2.length > 0;
+
+  function setCell(slotId, raw) {
+    onChange({
+      ...value,
+      [slotId]: raw,
+    });
+  }
+
+  if (!hasSubgroup) {
+    return (
+      <div style={{ display: "grid", gap: 10 }}>
+        {group1.map((g1) => (
+          <div
+            key={g1.id}
+            style={{
+              display: "grid",
+              gridTemplateColumns: "140px minmax(0,1fr)",
+              gap: 10,
+              alignItems: "center",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span
+                style={{
+                  width: 10,
+                  height: 10,
+                  borderRadius: 999,
+                  background: g1.color,
+                }}
+              />
+              <span
+                style={{ fontSize: 13.5, fontWeight: 600, color: "#334155" }}
+              >
+                {g1.label}
+              </span>
+            </div>
+
+            <input
+              type="number"
+              min="0"
+              step="0.5"
+              value={fromHours(value[g1.id] ?? 0, settings) || ""}
+              onFocus={(e) => {
+                if (
+                  !handleCategoryGuard(settings, () =>
+                    setShowCategoryModal(true),
+                  )
+                ) {
+                  e.target.blur();
+                }
+              }}
+              onChange={(e) => {
+                if (!hasCategory1Options(settings)) return;
+
+                setCell(g1.id, toHours(e.target.value, settings));
+              }}
+              style={{
+                height: 42,
+                borderRadius: 12,
+                border: "1px solid #e5e7eb",
+                padding: "0 14px",
+                fontSize: 14,
+                boxSizing: "border-box",
+              }}
+            />
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ display: "grid", gap: 12 }}>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: `140px repeat(${group2.length}, minmax(0,1fr))`,
+          gap: 8,
+          alignItems: "end",
+        }}
+      >
+        <div />
+        {group2.map((g2) => (
+          <div
+            key={g2.id}
+            style={{
+              fontSize: 12,
+              fontWeight: 700,
+              color: "#64748b",
+              textAlign: "center",
+            }}
+          >
+            {g2.label}
+          </div>
+        ))}
+      </div>
+
+      {group1.map((g1) => (
+        <div
+          key={g1.id}
+          style={{
+            display: "grid",
+            gridTemplateColumns: `140px repeat(${group2.length}, minmax(0,1fr))`,
+            gap: 8,
+            alignItems: "center",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span
+              style={{
+                width: 10,
+                height: 10,
+                borderRadius: 999,
+                background: g1.color,
+              }}
+            />
+            <span style={{ fontSize: 13.5, fontWeight: 600, color: "#334155" }}>
+              {g1.label}
+            </span>
+          </div>
+
+          {group2.map((g2) => {
+            const slotId = `${g1.id}__${g2.id}`;
+            return (
+              <input
+                key={slotId}
+                type="number"
+                min="0"
+                step="0.5"
+                value={fromHours(value[slotId] ?? 0, settings) || ""}
+                onFocus={(e) => {
+                  if (
+                    !handleCategoryGuard(settings, () =>
+                      setShowCategoryModal(true),
+                    )
+                  ) {
+                    e.target.blur();
+                  }
+                }}
+                onChange={(e) => {
+                  if (!hasCategory1Options(settings)) return;
+
+                  setCell(slotId, toHours(e.target.value, settings));
+                }}
+                style={{
+                  height: 42,
+                  borderRadius: 12,
+                  border: "1px solid #e5e7eb",
+                  padding: "0 12px",
+                  fontSize: 14,
+                  textAlign: "center",
+                  boxSizing: "border-box",
+                }}
+              />
+            );
+          })}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function TaskItemsEditor({
+  items = [],
+  settings,
+  onChange,
+  onBlockInput,
+  setShowCategoryModal,
+}) {
+  const structure = settings.timelineStructure || [];
+  const group1 = getGroup1Options(structure);
+  const group2 = getGroup2Options(structure);
+
+  const hasGroup1 = group1.length > 0;
+  const hasGroup2 = group2.length > 0;
+
+  function updateItem(index, patch) {
+    const next = items.map((item, i) =>
+      i === index ? { ...item, ...patch } : item,
+    );
+    onChange(next);
+  }
+
+  function removeItem(index) {
+    onChange(items.filter((_, i) => i !== index));
+  }
+
+  function addItem() {
+    onChange([
+      ...items,
+      {
+        id: `task_${Date.now()}`,
+        name: "",
+        group1Id: "",
+        group2Id: "",
+        hours: "",
+      },
+    ]);
+  }
+
+  // 🔥 AUTO EMPTY ROW (important UX)
+  const rows = [...items];
+
+  const last = rows[rows.length - 1];
+  const needsEmptyRow =
+    !last || last.name || last.hours || last.group1Id || last.group2Id;
+
+  if (needsEmptyRow) {
+    rows.push({
+      id: "__empty__",
+      name: "",
+      group1Id: "",
+      group2Id: "",
+      hours: "",
+    });
+  }
+
+  function handleRowChange(index, patch) {
+    if (index >= items.length) {
+      // this is the empty row → convert to real row
+      onChange([
+        ...items,
+        {
+          id: `task_${Date.now()}`,
+          name: patch.name || "",
+          group1Id: patch.group1Id || "",
+          group2Id: patch.group2Id || "",
+          hours: patch.hours || "",
+        },
+      ]);
+      return;
+    }
+
+    updateItem(index, patch);
+  }
+
+  return (
+    <div style={{ display: "grid", gap: 12 }}>
+      {/* 🔥 HEADER */}
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: `
+            minmax(0,1.5fr)
+            ${hasGroup1 ? "140px" : ""}
+            ${hasGroup2 ? "140px" : ""}
+            100px
+            ${items.length ? "80px" : ""}
+          `,
+          gap: 10,
+          fontSize: 12,
+          fontWeight: 700,
+          color: "#64748b",
+        }}
+      >
+        <div>Task Name</div>
+        {hasGroup1 && <div>Category 1</div>}
+        {hasGroup2 && <div>Category 2</div>}
+        <div>Hours</div>
+        {items.length > 0 && <div />}
+      </div>
+
+      {/* 🔥 ROWS */}
+      <div style={{ display: "grid", gap: 10 }}>
+        {rows.map((item, index) => {
+          const isEmptyRow = index >= items.length;
+
+          return (
+            <div
+              key={item.id || index}
+              style={{
+                display: "grid",
+                gridTemplateColumns: `
+                  minmax(0,1.5fr)
+                  ${hasGroup1 ? "140px" : ""}
+                  ${hasGroup2 ? "140px" : ""}
+                  100px
+                  ${!isEmptyRow ? "80px" : ""}
+                `,
+                gap: 10,
+                alignItems: "center",
+              }}
+            >
+              {/* TASK NAME */}
+              <input
+                value={item.name || ""}
+                onChange={(e) =>
+                  handleRowChange(index, { name: e.target.value })
+                }
+                placeholder="Task name"
+                style={inputStyle}
+              />
+
+              {/* CATEGORY 1 */}
+              {hasGroup1 && (
+                <select
+                  value={item.group1Id || ""}
+                  onChange={(e) =>
+                    handleRowChange(index, { group1Id: e.target.value })
+                  }
+                  style={inputStyle}
+                >
+                  <option value="">—</option>
+                  {group1.map((opt) => (
+                    <option key={opt.id} value={opt.id}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </select>
+              )}
+
+              {/* CATEGORY 2 */}
+              {hasGroup2 && (
+                <select
+                  value={item.group2Id || ""}
+                  onChange={(e) =>
+                    handleRowChange(index, { group2Id: e.target.value })
+                  }
+                  style={inputStyle}
+                >
+                  <option value="">—</option>
+                  {group2.map((opt) => (
+                    <option key={opt.id} value={opt.id}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </select>
+              )}
+
+              {/* HOURS */}
+              <input
+                type="number"
+                min="0"
+                step="0.5"
+                value={fromHours(item.hours || 0, settings) || ""}
+                onFocus={(e) => {
+                  if (
+                    !handleCategoryGuard(settings, () =>
+                      setShowCategoryModal(true),
+                    )
+                  ) {
+                    e.target.blur();
+                  }
+                }}
+                onChange={(e) => {
+                  if (!hasCategory1Options(settings)) return;
+
+                  handleRowChange(index, {
+                    hours: toHours(e.target.value, settings),
+                  });
+                }}
+                placeholder="0"
+                style={inputStyle}
+              />
+
+              {/* REMOVE BUTTON */}
+              {!isEmptyRow && (
+                <AppButton
+                  variant="softDanger"
+                  onClick={() => removeItem(index)}
+                >
+                  ✕
+                </AppButton>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* ADD BUTTON */}
+      <AppButton
+        variant="ghost"
+        onClick={addItem}
+        style={{ width: "100%", height: 44 }}
+      >
+        + Add New Task
+      </AppButton>
+    </div>
+  );
+}
+
+function buildProjectColorMap(projects = []) {
+  const map = {};
+  projects.forEach((p) => {
+    map[p.id] = p.color || "#94a3b8";
+  });
+  return map;
+}
+
+function ProjectGroupedMiniBar({ priorityHours = {}, settings }) {
+  const breakdown = getGroupedBreakdown(priorityHours, settings);
+  const total = breakdown.reduce((sum, seg) => sum + seg.value, 0);
+
+  if (!total) {
+    return (
+      <div style={{ height: 10, borderRadius: 999, background: "#f1f5f9" }} />
+    );
+  }
+
+  return (
+    <div
+      style={{
+        height: 10,
+        borderRadius: 999,
+        overflow: "hidden",
+        background: "#f1f5f9",
+        display: "flex",
+      }}
+    >
+      {breakdown.map((seg) => (
+        <div
+          key={seg.primaryId}
+          style={{
+            width: `${(seg.value / total) * 100}%`,
+            background: seg.color,
+          }}
+        />
+      ))}
+    </div>
+  );
+}
+
+function ProjectTaskMiniBar({
+  taskItems = [],
+  settings,
+  fallbackColor = "#94a3b8",
+}) {
+  const structure = settings.timelineStructure || DEFAULT_TIMELINE_STRUCTURE;
+  const group1 = getGroup1Options(structure);
+  const colorByGroup1 = Object.fromEntries(group1.map((g) => [g.id, g.color]));
+
+  const grouped = {};
+  let uncategorized = 0;
+
+  taskItems.forEach((item) => {
+    const hours = Number(item?.hours) || 0;
+    if (hours <= 0) return;
+    if (item.group1Id)
+      grouped[item.group1Id] = (grouped[item.group1Id] || 0) + hours;
+    else uncategorized += hours;
+  });
+
+  const segs = [
+    ...Object.entries(grouped).map(([gid, value]) => ({
+      id: gid,
+      value,
+      color: colorByGroup1[gid] || fallbackColor,
+    })),
+  ];
+
+  if (uncategorized > 0) {
+    segs.push({
+      id: "__uncategorized__",
+      value: uncategorized,
+      color: fallbackColor,
+    });
+  }
+
+  const total = segs.reduce((sum, s) => sum + s.value, 0);
+  if (!total) {
+    return (
+      <div style={{ height: 10, borderRadius: 999, background: "#f1f5f9" }} />
+    );
+  }
+
+  return (
+    <div
+      style={{
+        height: 10,
+        borderRadius: 999,
+        overflow: "hidden",
+        background: "#f1f5f9",
+        display: "flex",
+      }}
+    >
+      {segs.map((seg) => (
+        <div
+          key={seg.id}
+          style={{
+            width: `${(seg.value / total) * 100}%`,
+            background: seg.color,
+          }}
+        />
+      ))}
+    </div>
+  );
+}
+
+function TimelineProjectPreview({ tasks, projects, settings }) {
+  const mode = getTrackingMode(settings);
+  const projectColorMap = buildProjectColorMap(projects);
+
+  const items = Object.entries(tasks || {})
+    .map(([pid, rawTask]) => {
+      const task = normalizeTask(rawTask);
+      const total = getProjectTotalHours(task, settings);
+      if (total <= 0) return null;
+
+      const project = projects.find((p) => p.id === pid);
+
+      return {
+        id: pid,
+        name: project?.name || "Unknown",
+        total,
+        projectColor: projectColorMap[pid] || "#94a3b8",
+        priorityHours: task.priorityHours || {},
+        taskItems: task.taskItems || [],
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.total - a.total);
+
+  if (!items.length) {
+    return (
+      <div style={timelineEmpty}>
+        <div style={timelineEmptyIcon}>
+          <CalendarClock size={18} />
+        </div>
+        <div style={timelineEmptyTitle}>No hours plotted yet</div>
+        <div style={timelineEmptySub}>
+          This timeline has no tracked work yet.
+        </div>
+      </div>
+    );
+  }
+
+  const visible = items.slice(0, 3);
+  const hiddenCount = items.length - visible.length;
+
+  return (
+    <div
+      style={{
+        flex: 1,
+        padding: "14px 18px 18px",
+        display: "flex",
+        flexDirection: "column",
+        gap: 12,
+      }}
+    >
+      {visible.map((item) => (
+        <div
+          key={item.id}
+          style={{
+            display: "grid",
+            gridTemplateColumns: "120px minmax(0,1fr) auto",
+            gap: 10,
+            alignItems: "center",
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              minWidth: 0,
+            }}
+          >
+            <span
+              style={{
+                width: 10,
+                height: 10,
+                borderRadius: 999,
+                background: item.projectColor,
+                flexShrink: 0,
+              }}
+            />
+            <span
+              style={{
+                fontSize: 13.5,
+                fontWeight: 600,
+                color: "#334155",
+                whiteSpace: "nowrap",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+              }}
+            >
+              {item.name}
+            </span>
+          </div>
+
+          {mode === TRACKING_MODES.SIMPLE && (
+            <div
+              style={{
+                height: 10,
+                borderRadius: 999,
+                background: item.projectColor,
+              }}
+            />
+          )}
+
+          {mode === TRACKING_MODES.GROUPED && (
+            <ProjectGroupedMiniBar
+              priorityHours={item.priorityHours}
+              settings={settings}
+            />
+          )}
+
+          {mode === TRACKING_MODES.TASK && (
+            <ProjectTaskMiniBar
+              taskItems={item.taskItems}
+              settings={settings}
+              fallbackColor={item.projectColor}
+            />
+          )}
+
+          <div
+            style={{
+              fontSize: 12.5,
+              fontWeight: 600,
+              color: "#64748b",
+              minWidth: 44,
+              textAlign: "right",
+            }}
+          >
+            {fromHours(item.total, settings).toFixed(1)} {settings.plotUnit}
+          </div>
+        </div>
+      ))}
+
+      {hiddenCount > 0 && (
+        <div
+          style={{
+            fontSize: 12,
+            color: "#94a3b8",
+            paddingTop: 2,
+          }}
+        >
+          +{hiddenCount} more project{hiddenCount > 1 ? "s" : ""}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function PlotModal({
   project,
   task,
@@ -6835,372 +8244,290 @@ function PlotModal({
   onAddNote,
   onDelNote,
   onEditNote,
+  onShowCategoryModal,
 }) {
-  const existing = task.priorityHours || {};
+  const mode = getTrackingMode(settings);
+  const normalizedTask = normalizeTask(task);
   const structure = settings.timelineStructure || DEFAULT_TIMELINE_STRUCTURE;
-  const dynSlots = buildSlots(structure).map((slot) => ({
-    ...slot,
-    pId: slot.g1Id,
-    wtId: slot.g2Id,
-    order: slot.order,
-  }));
-  const dynGroup1 = getGroup1Options(structure);
-  const dynGroup2 = structure[1]?.options || [];
+  const hasPrimaryOptions =
+    structure?.[0]?.options && structure[0].options.length > 0;
 
-  // Load from draft cache (persists across open/close), fallback to saved data
   const draftKey = project.id;
-  const initPh = () => {
-    const draft = _plotDrafts[draftKey];
-    const o = {};
-    dynSlots.forEach((s) => {
-      o[s.id] = draft ? (draft.ph[s.id] ?? "") : existing[s.id] || "";
-    });
-    return o;
-  };
-  const [ph, setPh] = useState(initPh);
-  const [plotStart, setPlotStart] = useState(
-    () => _plotDrafts[draftKey]?.plotStart || task.plotStart || globalStart,
-  );
-  const [tab, setTab] = useState("plot");
-  const [nS, setNS] = useState(plotStart);
-  const [nE, setNE] = useState(addD(plotStart, 4));
-  const [nT, setNT] = useState("");
-  const notes = task.notes || [];
+  const existingDraft = _plotDrafts[draftKey];
 
-  // Keep draft cache in sync
+  const [draft, setDraft] = useState(() => ({
+    priorityHours:
+      existingDraft?.priorityHours || normalizedTask.priorityHours || {},
+    simpleHours: existingDraft?.simpleHours ?? normalizedTask.simpleHours ?? 0,
+    taskItems: existingDraft?.taskItems || normalizedTask.taskItems || [],
+    plotStart:
+      existingDraft?.plotStart || normalizedTask.plotStart || globalStart,
+  }));
+
+  const [tab, setTab] = useState("plot");
+  const [nS, setNS] = useState(draft.plotStart);
+  const [nE, setNE] = useState(addD(draft.plotStart, 4));
+  const [nT, setNT] = useState("");
+  const notes = normalizedTask.notes || [];
+
+  function convertToHours(value) {
+    const unit = settings.plotUnit || PLOT_UNITS.HOURS;
+
+    if (unit === PLOT_UNITS.DAYS) return Number(value) * 8;
+    if (unit === PLOT_UNITS.WEEKS) return Number(value) * 40;
+
+    return Number(value);
+  }
+
   useEffect(() => {
-    _plotDrafts[draftKey] = { ph, plotStart };
-  }, [ph, plotStart]);
+    _plotDrafts[draftKey] = draft;
+  }, [draftKey, draft]);
 
   function addNote() {
     if (!nT.trim()) return;
     onAddNote({ startDate: nS, endDate: nE, text: nT.trim() });
     setNT("");
   }
-  const activeSlots = dynSlots
-    .filter((s) => Number(ph[s.id]) > 0)
-    .map((s) => ({ ...s, hours: Number(ph[s.id]) }));
-  const totalH = activeSlots.reduce((acc, s) => acc + s.hours, 0);
-  const previewMap =
-    activeSlots.length > 0
-      ? plotPartialDays(activeSlots, plotStart, settings)
-      : new Map();
-  const totalD =
-    previewMap.size > 0
-      ? [...previewMap.keys()].filter((d) => dayType(d, settings) === "work")
-          .length
-      : 0;
-  const endDate = previewMap.size ? [...previewMap.keys()].sort().pop() : null;
+
+  const totalHours =
+    mode === TRACKING_MODES.SIMPLE
+      ? Number(draft.simpleHours || 0)
+      : mode === TRACKING_MODES.TASK
+        ? (draft.taskItems || []).reduce(
+            (sum, item) => sum + (Number(item?.hours) || 0),
+            0,
+          )
+        : Object.values(draft.priorityHours || {}).reduce(
+            (sum, value) => sum + (Number(value) || 0),
+            0,
+          );
+
+  const displayTotal = fromHours(totalHours, settings);
 
   return (
     <Modal
-      title={project.name}
-      sub="Plot hours by priority and work type"
+      title={`Plot Hours — ${project.name}`}
       onClose={onClose}
-      width={560}
+      width={mode === TRACKING_MODES.TASK ? 980 : 760}
     >
-      <Tabs
-        tabs={[
-          ["plot", "📊 Hours by Priority"],
-          ["notes", "📝 Notes"],
-        ]}
-        active={tab}
-        onChange={setTab}
-      />
+      <div style={{ display: "grid", gap: 16 }}>
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            gap: 12,
+          }}
+        >
+          <TrackingModeBadge mode={mode} />
 
-      {tab === "plot" && (
-        <>
-          <Fld label="Plot Start Date">
-            <Inp
-              type="date"
-              value={plotStart}
-              onChange={(v) => {
-                setPlotStart(v);
-                setNS(v);
-                setNE(addD(v, 4));
-              }}
-            />
-          </Fld>
-          {dynGroup1.map((group1opt) => (
-            <div
-              key={group1opt.id}
-              style={{
-                marginBottom: 12,
-                borderRadius: 9,
-                border: `1.5px solid ${group1opt.color}30`,
-                overflow: "hidden",
-              }}
-            >
-              <div
+          <div style={{ fontSize: 13, color: "#64748b", fontWeight: 700 }}>
+            Total: {displayTotal.toFixed(1)} {settings.plotUnit}
+          </div>
+        </div>
+
+        <div
+          style={{
+            display: "flex",
+            gap: 8,
+            padding: 4,
+            borderRadius: 14,
+            background: "#f8fafc",
+            border: "1px solid #e5e7eb",
+            width: "fit-content",
+          }}
+        >
+          <AppButton
+            variant={tab === "plot" ? "primary" : "ghost"}
+            onClick={() => setTab("plot")}
+            style={{ height: 36 }}
+          >
+            Hours
+          </AppButton>
+          <AppButton
+            variant={tab === "notes" ? "primary" : "ghost"}
+            onClick={() => setTab("notes")}
+            style={{ height: 36 }}
+          >
+            Notes
+          </AppButton>
+        </div>
+
+        {tab === "plot" && (
+          <div style={{ display: "grid", gap: 16 }}>
+            <div style={{ display: "grid", gap: 8 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: "#334155" }}>
+                Plot Start
+              </div>
+              <input
+                type="date"
+                value={draft.plotStart}
+                onChange={(e) =>
+                  setDraft((prev) => ({ ...prev, plotStart: e.target.value }))
+                }
                 style={{
-                  background: `${group1opt.color}12`,
-                  padding: "7px 12px",
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 8,
+                  width: 220,
+                  height: 42,
+                  borderRadius: 12,
+                  border: "1px solid #e5e7eb",
+                  padding: "0 12px",
+                  fontSize: 14,
+                  boxSizing: "border-box",
                 }}
-              >
+              />
+            </div>
+
+            {mode === TRACKING_MODES.SIMPLE &&
+              (hasPrimaryOptions ? (
+                <SimpleHoursEditor
+                  value={draft.simpleHours}
+                  onChange={(value) =>
+                    setDraft((prev) => ({ ...prev, simpleHours: value }))
+                  }
+                  settings={settings}
+                  setShowCategoryModal={() => setShowCategoryModal(true)}
+                />
+              ) : (
                 <div
                   style={{
-                    width: 10,
-                    height: 10,
-                    borderRadius: "50%",
-                    background: group1opt.color,
-                    flexShrink: 0,
-                  }}
-                />
-                <span
-                  style={{
-                    fontSize: 11,
-                    fontWeight: 700,
-                    color: group1opt.color,
+                    padding: 14,
+                    borderRadius: 12,
+                    background: "#fff7ed",
+                    border: "1px solid #fed7aa",
+                    color: "#9a3412",
+                    fontSize: 13,
                   }}
                 >
-                  {group1opt.label}
-                </span>
-                {dynGroup2.some(
-                  (group2opt) =>
-                    Number(ph[`${group1opt.id}__${group2opt.id}`]) || 0,
-                ) && (
-                  <span
-                    style={{
-                      fontSize: 9,
-                      color: group1opt.color,
-                      fontFamily: "DM Mono,monospace",
-                      marginLeft: "auto",
-                    }}
-                  >
-                    {roundDays(
-                      dynGroup2.reduce(
-                        (acc, group2opt) =>
-                          acc +
-                          (Number(ph[`${group1opt.id}__${group2opt.id}`]) || 0),
-                        0,
-                      ),
-                    )}
-                    d
-                  </span>
-                )}
-              </div>
-              <div
-                style={{
-                  padding: "10px 12px",
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: 7,
-                  background: "#fff",
-                }}
-              >
-                {dynGroup2.map((group2opt) => {
-                  const slotId = `${group1opt.id}__${group2opt.id}`;
-                  return (
-                    <div
-                      key={slotId}
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 10,
-                      }}
-                    >
-                      <span
-                        style={{
-                          display: "flex",
-                          alignItems: "center",
-                          gap: 6,
-                          minWidth: 128,
-                          fontSize: 11,
-                          fontWeight: 500,
-                          color: "var(--text-2)",
-                        }}
-                      >
-                        <span
-                          style={{ color: group1opt.color, display: "flex" }}
-                        >
-                          <WtIcon icon={group2opt.icon} size={13} />
-                        </span>
-                        {group2opt.label}
-                      </span>
-                      <div style={{ flex: 1 }}>
-                        <input
-                          type="number"
-                          value={ph[slotId]}
-                          onChange={(e) =>
-                            setPh((p) => ({
-                              ...p,
-                              [slotId]: e.target.value,
-                            }))
-                          }
-                          min="0"
-                          step="0.5"
-                          placeholder="0h"
-                          style={{
-                            width: "100%",
-                            padding: "7px 10px",
-                            border: "1.5px solid var(--border)",
-                            borderRadius: 7,
-                            fontSize: 13,
-                            fontFamily: "DM Mono,monospace",
-                            MozAppearance: "textfield",
-                            WebkitAppearance: "none",
-                          }}
-                          onWheel={(e) => e.preventDefault()}
-                        />
-                      </div>
-                      {Number(ph[slotId]) > 0 && (
-                        <span
-                          style={{
-                            fontSize: 11,
-                            fontWeight: 700,
-                            color: group1opt.color,
-                            fontFamily: "DM Mono,monospace",
-                            flexShrink: 0,
-                            minWidth: 32,
-                          }}
-                        >
-                          {roundDays(Number(ph[slotId]))}d
-                        </span>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          ))}
-          {totalH > 0 && (
-            <div
-              style={{
-                background: "var(--bg)",
-                border: "1.5px solid var(--border)",
-                borderRadius: 8,
-                padding: "10px 14px",
-                marginBottom: 12,
-              }}
-            >
-              <div
-                style={{
-                  display: "flex",
-                  gap: 14,
-                  flexWrap: "wrap",
-                  alignItems: "center",
-                }}
-              >
-                <span
-                  style={{
-                    fontSize: 12,
-                    fontWeight: 700,
-                    color: "var(--text)",
-                    fontFamily: "DM Mono,monospace",
-                  }}
-                >
-                  {totalH}h → {totalD}d total
-                </span>
-                {endDate && (
-                  <span
-                    style={{
-                      fontSize: 11,
-                      color: "var(--text-2)",
-                      fontFamily: "DM Mono,monospace",
-                    }}
-                  >
-                    ends {fmt(endDate)}
-                  </span>
-                )}
-              </div>
-              <div
-                style={{
-                  fontSize: 10,
-                  color: "var(--text-3)",
-                  marginTop: 4,
-                }}
-              >
-                Queue: High-Bug → High-NF → High-Enh → Medium … → Low-Enh
-              </div>
-            </div>
-          )}
-          <Actions>
-            <B onClick={onClose}>Cancel</B>
-            <B
-              v="primary"
-              onClick={() => {
-                const out = {};
-                dynSlots.forEach((s) => {
-                  const v = Number(ph[s.id]) || 0;
-                  if (v > 0) out[s.id] = v;
-                });
-                onSave(out, plotStart);
-              }}
-            >
-              Save Changes
-            </B>
-          </Actions>
-        </>
-      )}
-      {tab === "notes" && (
-        <>
-          {notes.length > 0 && (
-            <NoteList notes={notes} onDelete={onDelNote} onEdit={onEditNote} />
-          )}
-          {!notes.length && (
-            <div
-              style={{
-                textAlign: "center",
-                padding: "14px 0",
-                fontSize: 12,
-                color: "var(--text-3)",
-              }}
-            >
-              No notes yet
-            </div>
-          )}
-          <div
-            style={{
-              border: "1.5px dashed var(--border-strong)",
-              borderRadius: 8,
-              padding: 14,
-            }}
-          >
-            <div
-              style={{
-                fontSize: 10,
-                fontWeight: 700,
-                color: "var(--text-3)",
-                textTransform: "uppercase",
-                letterSpacing: "0.1em",
-                marginBottom: 10,
-              }}
-            >
-              + Add Note
-            </div>
+                  Please create at least one Category 1 option in Settings
+                  before adding hours.
+                </div>
+              ))}
+
+            {mode === TRACKING_MODES.GROUPED && (
+              <GroupedHoursEditor
+                settings={settings}
+                value={draft.priorityHours}
+                onChange={(nextPriorityHours) =>
+                  setDraft((prev) => ({
+                    ...prev,
+                    priorityHours: nextPriorityHours,
+                  }))
+                }
+                setShowCategoryModal={() => setShowCategoryModal(true)}
+              />
+            )}
+
+            {mode === TRACKING_MODES.TASK && (
+              <TaskItemsEditor
+                items={draft.taskItems}
+                settings={settings}
+                onChange={(nextItems) =>
+                  setDraft((prev) => ({
+                    ...prev,
+                    taskItems: nextItems,
+                  }))
+                }
+                setShowCategoryModal={() => setShowCategoryModal(true)}
+              />
+            )}
+          </div>
+        )}
+
+        {tab === "notes" && (
+          <div style={{ display: "grid", gap: 14 }}>
             <div
               style={{
                 display: "grid",
-                gridTemplateColumns: "1fr 1fr",
+                gridTemplateColumns: "140px 140px minmax(0,1fr) auto",
                 gap: 10,
+                alignItems: "center",
               }}
             >
-              <Fld label="Start Date">
-                <Inp type="date" value={nS} onChange={setNS} />
-              </Fld>
-              <Fld label="End Date">
-                <Inp type="date" value={nE} onChange={setNE} />
-              </Fld>
-            </div>
-            <Fld label="Note Text">
-              <Inp
-                value={nT}
-                onChange={setNT}
-                placeholder="e.g. UAT review period..."
+              <input
+                type="date"
+                value={nS}
+                onChange={(e) => setNS(e.target.value)}
+                style={{
+                  height: 42,
+                  borderRadius: 12,
+                  border: "1px solid #e5e7eb",
+                  padding: "0 12px",
+                }}
               />
-            </Fld>
-            <B v="subtle" onClick={addNote}>
-              + Add Note
-            </B>
+
+              <input
+                type="date"
+                value={nE}
+                onChange={(e) => setNE(e.target.value)}
+                style={{
+                  height: 42,
+                  borderRadius: 12,
+                  border: "1px solid #e5e7eb",
+                  padding: "0 12px",
+                }}
+              />
+
+              <input
+                value={nT}
+                onChange={(e) => setNT(e.target.value)}
+                placeholder="Add note"
+                style={{
+                  height: 42,
+                  borderRadius: 12,
+                  border: "1px solid #e5e7eb",
+                  padding: "0 14px",
+                }}
+              />
+
+              <AppButton variant="primary" onClick={addNote}>
+                Add
+              </AppButton>
+            </div>
+
+            <NoteList notes={notes} onDelete={onDelNote} onEdit={onEditNote} />
           </div>
-          <Actions>
-            <B onClick={onClose}>Close</B>
-          </Actions>
-        </>
-      )}
+        )}
+
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+          <AppButton variant="secondary" onClick={onClose}>
+            Cancel
+          </AppButton>
+
+          <AppButton
+            variant="primary"
+            disabled={mode === TRACKING_MODES.SIMPLE && !hasPrimaryOptions}
+            onClick={() =>
+              onSave(
+                {
+                  priorityHours:
+                    mode === TRACKING_MODES.GROUPED
+                      ? Object.fromEntries(
+                          Object.entries(draft.priorityHours).map(([k, v]) => [
+                            k,
+                            convertToHours(v),
+                          ]),
+                        )
+                      : draft.priorityHours,
+                  simpleHours:
+                    mode === TRACKING_MODES.SIMPLE
+                      ? convertToHours(draft.simpleHours)
+                      : draft.simpleHours,
+                  taskItems:
+                    mode === TRACKING_MODES.TASK
+                      ? draft.taskItems.map((t) => ({
+                          ...t,
+                          hours: convertToHours(t.hours),
+                        }))
+                      : draft.taskItems,
+                },
+                draft.plotStart,
+              )
+            }
+          >
+            Save
+          </AppButton>
+        </div>
+      </div>
     </Modal>
   );
 }
@@ -7632,15 +8959,16 @@ function CompareModal({ allTimelines, projects, settings, onClose }) {
     if (!tl) return new Set();
     const pt = tl.tasks?.[pid] || {};
     const ps = pt.plotStart || tl.plotStart;
-    const ph = pt.priorityHours || {};
+    const mode = getTrackingMode(settings);
+    const ph = mode === TRACKING_MODES.GROUPED ? pt.priorityHours || {} : {};
 
     const slots = buildSlots(
       settings.timelineStructure || DEFAULT_TIMELINE_STRUCTURE,
     )
-      .filter((s) => (ph[s.id] || 0) > 0)
+      .filter((s) => Number(ph[s.id]) > 0)
       .map((s) => ({
         ...s,
-        hours: ph[s.id],
+        hours: Number(ph[s.id]) || 0,
       }));
 
     if (!slots.length) return new Set();
@@ -8469,396 +9797,812 @@ function TimelineStructureEditor({ value, onChange }) {
 }
 
 function SettingsModal({ settings, onClose, onSave }) {
-  const [local, setLocal] = useState({
+  const [draft, setDraft] = useState(() => ({
     ...settings,
-    holidays: [...(settings.holidays || [])],
+    trackingMode: getTrackingMode(settings),
     timelineStructure: settings.timelineStructure || DEFAULT_TIMELINE_STRUCTURE,
-    priorityColors: {
-      hp: settings.priorityColors?.hp || "#ef4444",
-      mp: settings.priorityColors?.mp || "#f97316",
-      lp: settings.priorityColors?.lp || "#4f46e5",
-    },
-  });
-  const [newH, setNewH] = useState("");
+    excludeDays: settings.excludeDays || [],
+    excludeDates: settings.excludeDates || [],
+  }));
 
-  function save() {
-    const structure = local.timelineStructure || [];
+  const [showModeWarning, setShowModeWarning] = useState(false);
+  const [pendingMode, setPendingMode] = useState(null);
 
-    if (structure.length !== 2) {
-      alert("Timeline structure must have exactly 2 groups.");
-      return;
+  const mode = getTrackingMode(draft);
+  const { errors, hasErrors } = getSettingsValidation(draft);
+
+  useEffect(() => {
+    setDraft((prev) => {
+      const structure = prev.timelineStructure || [];
+
+      const g1 = structure[0];
+      if (!g1.options || g1.options.length === 0) {
+        g1.options = [
+          {
+            id: "opt_default",
+            label: "Default",
+            color: "#94a3b8",
+            order: 0,
+          },
+        ];
+      }
+
+      return {
+        ...prev,
+        timelineStructure: [...structure],
+      };
+    });
+  }, []);
+
+  useEffect(() => {
+    if (getTrackingMode(draft) === TRACKING_MODES.SIMPLE) return;
+
+    const group1 = draft.timelineStructure?.[0];
+    if (!group1) return;
+
+    if (!Array.isArray(group1.options) || group1.options.length === 0) {
+      setDraft((prev) => {
+        const next = [
+          ...(prev.timelineStructure || DEFAULT_TIMELINE_STRUCTURE),
+        ];
+        next[0] = {
+          ...next[0],
+          options: [
+            createEmptyOption(0, 0, next[0]?.representation || "color"),
+          ],
+        };
+        return { ...prev, timelineStructure: next };
+      });
     }
+  }, [draft.trackingMode]);
 
-    const [mainCategory, subCategory] = structure;
-
-    if (!mainCategory?.label?.trim()) {
-      alert("Main Category Name is required.");
-      return;
-    }
-
-    if (!subCategory?.label?.trim()) {
-      alert("Subcategory Name is required.");
-      return;
-    }
-
-    if (!(mainCategory.options || []).length) {
-      alert("Main Category must have at least 1 option.");
-      return;
-    }
-
-    if (!(subCategory.options || []).length) {
-      alert("Subcategory must have at least 1 option.");
-      return;
-    }
-
-    const hasEmptyMain = mainCategory.options.some((opt) => !opt.label?.trim());
-    if (hasEmptyMain) {
-      alert("All Main Category options must have a name.");
-      return;
-    }
-
-    const hasEmptySub = subCategory.options.some((opt) => !opt.label?.trim());
-    if (hasEmptySub) {
-      alert("All Subcategory options must have a name.");
-      return;
-    }
-
-    onSave(local);
+  function setMode(nextMode) {
+    if (nextMode === mode) return;
+    setPendingMode(nextMode);
+    setShowModeWarning(true);
   }
 
-  const days = [0, 1, 2, 3, 4, 5, 6].map((v) => ({
-    value: v,
-    label: [
-      "Sunday",
-      "Monday",
-      "Tuesday",
-      "Wednesday",
-      "Thursday",
-      "Friday",
-      "Saturday",
-    ][v],
-  }));
-  return (
-    <Modal
-      title="Settings"
-      sub="Configure global scheduling rules"
-      onClose={onClose}
-      width={500}
-    >
-      {/* Timeline Structure */}
-      <SettingsSection
-        title="Timeline Structure"
-        sub="Define how your timeline is grouped."
-      >
-        <TimelineStructureEditor
-          value={local.timelineStructure}
-          onChange={(nextStructure) =>
-            setLocal((prev) => ({
-              ...prev,
-              timelineStructure: nextStructure,
-            }))
-          }
-        />
-      </SettingsSection>
+  function applyModeChange() {
+    setDraft((prev) => ({
+      ...prev,
+      trackingMode: pendingMode,
+      timelineStructure:
+        pendingMode === TRACKING_MODES.SIMPLE
+          ? [
+              { id: "group_primary", label: "Category 1", options: [] },
+              { id: "group_secondary", label: "Category 2", options: [] },
+            ]
+          : prev.timelineStructure,
+    }));
+    setPendingMode(null);
+    setShowModeWarning(false);
+  }
 
-      <SettingsSection title="Scheduling Rules">
-        {/* Exclude Days */}
-        <div style={{ marginBottom: 14 }}>
-          <div
-            style={{
-              fontSize: 11,
-              fontWeight: 700,
-              color: "var(--text-2)",
-              textTransform: "uppercase",
-              letterSpacing: "0.1em",
-              marginBottom: 10,
-            }}
-          >
-            Exclude Days
-          </div>
+  function saveNow(clearTrackingData = false) {
+    onSave(draft, { clearTrackingData });
+  }
+
+  function updateGroup(groupIndex, patch) {
+    const next = [...draft.timelineStructure];
+    next[groupIndex] = { ...next[groupIndex], ...patch };
+    setDraft((prev) => ({ ...prev, timelineStructure: next }));
+  }
+
+  function updateOption(groupIndex, optionIndex, patch) {
+    const next = [...draft.timelineStructure];
+    next[groupIndex] = {
+      ...next[groupIndex],
+      options: next[groupIndex].options.map((opt, i) =>
+        i === optionIndex ? { ...opt, ...patch } : opt,
+      ),
+    };
+    setDraft((prev) => ({ ...prev, timelineStructure: next }));
+  }
+
+  function addOption(groupIndex) {
+    const next = [...draft.timelineStructure];
+    const rep = next[groupIndex]?.representation || "color";
+    const nextIndex = next[groupIndex].options.length;
+
+    next[groupIndex] = {
+      ...next[groupIndex],
+      options: [
+        ...(next[groupIndex].options || []),
+        createEmptyOption(groupIndex, nextIndex, rep),
+      ],
+    };
+
+    setDraft((prev) => ({ ...prev, timelineStructure: next }));
+  }
+
+  function updateGroupRepresentation(groupIndex, representation) {
+    const next = [...draft.timelineStructure];
+    const existingOptions = next[groupIndex]?.options || [];
+
+    next[groupIndex] = {
+      ...next[groupIndex],
+      representation,
+      options: existingOptions.map((opt, i) => ({
+        id: opt.id,
+        label: opt.label,
+        order: i,
+        color: opt.color || "#94a3b8",
+        icon: opt.icon || "circle",
+        texture: opt.texture || "solid",
+      })),
+    };
+
+    setDraft((prev) => ({ ...prev, timelineStructure: next }));
+  }
+
+  function removeOption(groupIndex, optionIndex) {
+    const next = [...draft.timelineStructure];
+    next[groupIndex] = {
+      ...next[groupIndex],
+      options: next[groupIndex].options
+        .filter((_, i) => i !== optionIndex)
+        .map((opt, i) => ({ ...opt, order: i })),
+    };
+    setDraft((prev) => ({ ...prev, timelineStructure: next }));
+  }
+
+  const showStructureEditor = mode !== TRACKING_MODES.SIMPLE;
+  const groupedMode = mode === TRACKING_MODES.GROUPED;
+  const taskMode = mode === TRACKING_MODES.TASK;
+
+  const MAX_CATEGORY_COUNT = REPRESENTATION_OPTIONS.length;
+
+  function createEmptyGroup(groupIndex) {
+    return {
+      id: `group_${groupIndex + 1}_${Date.now()}`,
+      label: "",
+      representation: REPRESENTATION_TYPES.COLOR,
+      options: [createEmptyOption(groupIndex, 0, REPRESENTATION_TYPES.COLOR)],
+    };
+  }
+
+  function addCategory() {
+    setDraft((prev) => {
+      const current = Array.isArray(prev.timelineStructure)
+        ? [...prev.timelineStructure]
+        : [];
+
+      if (current.length >= MAX_CATEGORY_COUNT) return prev;
+
+      return {
+        ...prev,
+        timelineStructure: [...current, createEmptyGroup(current.length)],
+      };
+    });
+  }
+
+  function removeCategory(groupIndex) {
+    if (groupIndex === 0) return;
+
+    setDraft((prev) => {
+      const next = [...(prev.timelineStructure || [])];
+      next.splice(groupIndex, 1);
+
+      return {
+        ...prev,
+        timelineStructure: next.map((group, idx) => ({
+          ...group,
+          order: idx,
+        })),
+      };
+    });
+  }
+
+  const categoryCardTitle = {
+    fontSize: 20,
+    fontWeight: 800,
+    color: "#0f172a",
+    letterSpacing: "-0.02em",
+  };
+
+  const categoryCardSub = {
+    fontSize: 13,
+    color: "#64748b",
+    lineHeight: 1.5,
+  };
+
+  return (
+    <>
+      <Modal title="Settings" onClose={onClose} width={720}>
+        <div style={{ display: "grid", gap: 18 }}>
           <div
             style={{
               display: "grid",
-              gridTemplateColumns: "repeat(3, 1fr)",
-              gap: 8,
+              gap: 12,
+              padding: "14px 16px",
+              borderRadius: 14,
+              background: "#f8fafc",
+              border: "1px solid #e5e7eb",
             }}
           >
-            {[
-              "Sunday",
-              "Monday",
-              "Tuesday",
-              "Wednesday",
-              "Thursday",
-              "Friday",
-              "Saturday",
-            ].map((dayName, idx) => (
-              <label
-                key={idx}
+            <div style={{ fontSize: 14, fontWeight: 800, color: "#0f172a" }}>
+              Tracking Mode
+              <span style={requiredAsterisk}>*</span>
+            </div>
+
+            <select
+              value={mode}
+              onChange={(e) => setMode(e.target.value)}
+              style={{
+                width: "100%",
+                height: 44,
+                borderRadius: 12,
+                border: "1px solid #e5e7eb",
+                padding: "0 12px",
+                fontSize: 14,
+                background: "#fff",
+              }}
+            >
+              <option value={TRACKING_MODES.SIMPLE}>Simple</option>
+              <option value={TRACKING_MODES.GROUPED}>Grouped</option>
+              <option value={TRACKING_MODES.TASK}>Task</option>
+            </select>
+
+            <div style={{ fontSize: 12.5, color: "#64748b", lineHeight: 1.6 }}>
+              {mode === TRACKING_MODES.SIMPLE &&
+                "Simple mode uses one total-hours input per project."}
+              {mode === TRACKING_MODES.GROUPED &&
+                "Grouped mode uses Category 1 and an optional Category 2."}
+              {mode === TRACKING_MODES.TASK &&
+                "Task mode lets each project contain task rows, with up to two optional task categories."}
+            </div>
+
+            <div style={{ display: "grid", gap: 8 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: "#334155" }}>
+                Plotting Unit
+                <span style={requiredAsterisk}>*</span>
+              </div>
+
+              <select
+                value={draft.plotUnit || PLOT_UNITS.HOURS}
+                onChange={(e) =>
+                  setDraft((prev) => ({ ...prev, plotUnit: e.target.value }))
+                }
                 style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 8,
-                  padding: "8px 10px",
-                  background: "#f8fafc",
-                  borderRadius: 8,
-                  border: "1.5px solid var(--border)",
-                  cursor: "pointer",
+                  width: "100%",
+                  height: 44,
+                  borderRadius: 12,
+                  border: "1px solid #e5e7eb",
+                  padding: "0 12px",
+                  fontSize: 14,
                 }}
               >
-                <input
-                  type="checkbox"
-                  checked={(local.excludeDays || []).includes(idx)}
-                  onChange={(e) => {
-                    const newExclude = e.target.checked
-                      ? [...(local.excludeDays || []), idx]
-                      : (local.excludeDays || []).filter((d) => d !== idx);
-                    setLocal((p) => ({ ...p, excludeDays: newExclude }));
-                  }}
-                  style={{
-                    accentColor: "var(--blue)",
-                    width: 14,
-                    height: 14,
-                  }}
-                />
-                <span
-                  style={{
-                    fontSize: 12,
-                    color: "var(--text-2)",
-                  }}
-                >
-                  {dayName}
-                </span>
-              </label>
-            ))}
-          </div>
-        </div>
+                <option value={PLOT_UNITS.HOURS}>Hours</option>
+                <option value={PLOT_UNITS.DAYS}>Days</option>
+                <option value={PLOT_UNITS.WEEKS}>Weeks</option>
+              </select>
+            </div>
 
-        {/* Exclude Dates */}
-        <div style={{ marginBottom: 14 }}>
-          <div
-            style={{
-              fontSize: 11,
-              fontWeight: 700,
-              color: "var(--text-2)",
-              textTransform: "uppercase",
-              letterSpacing: "0.1em",
-              marginBottom: 10,
-            }}
-          >
-            Exclude Dates
-          </div>
-          <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
-            <Inp
-              type="date"
-              value={newH}
-              onChange={setNewH}
-              style={{ flex: 1 }}
-            />
-            <B
-              v="subtle"
-              onClick={() => {
-                if (newH && !local.holidays.includes(newH)) {
-                  setLocal((p) => ({
-                    ...p,
-                    holidays: [...p.holidays, newH].sort(),
-                  }));
-                  setNewH("");
-                }
-              }}
-            >
-              Add
-            </B>
-          </div>
-          <div
-            style={{
-              display: "flex",
-              flexWrap: "wrap",
-              gap: 6,
-              minHeight: 28,
-            }}
-          >
-            {local.holidays.map((h) => (
-              <Chip
-                key={h}
-                color="#fff1f2"
-                onRemove={() =>
-                  setLocal((p) => ({
-                    ...p,
-                    holidays: p.holidays.filter((x) => x !== h),
+            <div style={{ display: "grid", gap: 8 }}>
+              <div style={{ fontSize: 13, fontWeight: 700 }}>
+                Work Hours per Day
+              </div>
+
+              <input
+                type="number"
+                min="1"
+                value={draft.workHoursPerDay || 8}
+                onChange={(e) =>
+                  setDraft((prev) => ({
+                    ...prev,
+                    workHoursPerDay: Number(e.target.value) || 8,
                   }))
                 }
-              >
-                <span
-                  style={{
-                    color: "#be123c",
-                    fontFamily: "DM Mono,monospace",
-                    fontSize: 11,
-                  }}
-                >
-                  {fmt(h)}
-                </span>
-              </Chip>
-            ))}
-            {!local.holidays.length && (
-              <span style={{ fontSize: 11, color: "var(--text-3)" }}>
-                No dates added
-              </span>
-            )}
-          </div>
-        </div>
+                style={{
+                  width: "100%",
+                  height: 44,
+                  borderRadius: 12,
+                  border: "1px solid #e5e7eb",
+                  padding: "0 12px",
+                  fontSize: 14,
+                }}
+              />
 
-        {/* Timeline Cell Colors */}
-        <div style={{ marginBottom: 14 }}>
-          <div
-            style={{
-              fontSize: 11,
-              fontWeight: 700,
-              color: "var(--text-2)",
-              textTransform: "uppercase",
-              letterSpacing: "0.1em",
-              marginBottom: 10,
-            }}
-          >
-            Timeline Cell Colors
+              <div style={{ fontSize: 12, color: "#64748b" }}>
+                Example: 8 = 1 day equals 8 working hours
+              </div>
+            </div>
           </div>
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(2, 1fr)",
-              gap: 10,
-            }}
-          >
-            {[["Excluded Days"], ["Excluded Dates"]].map(([label]) => {
-              const key =
-                label === "Excluded Days" ? "alignmentColor" : "holidayColor";
-              const def =
-                label === "Excluded Days"
-                  ? "var(--align-bg)"
-                  : "var(--holiday-bg)";
-              const sample = local[key] || def;
-              return (
-                <div
-                  key={label}
-                  style={{
-                    background: "#fff",
-                    border: "1.5px solid var(--border)",
-                    borderRadius: 10,
-                    padding: "10px 12px",
-                    textAlign: "center",
+
+          <div style={{ display: "grid", gap: 12 }}>
+            <div style={{ fontSize: 14, fontWeight: 800, color: "#0f172a" }}>
+              Calendar Rules
+            </div>
+
+            <div style={{ display: "grid", gap: 8 }}>
+              <div
+                style={{ fontSize: 12.5, fontWeight: 700, color: "#334155" }}
+              >
+                Excluded Weekdays
+              </div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map(
+                  (label, idx) => {
+                    const checked = (draft.excludeDays || []).includes(idx);
+                    return (
+                      <button
+                        key={label}
+                        type="button"
+                        onClick={() =>
+                          setDraft((prev) => ({
+                            ...prev,
+                            excludeDays: checked
+                              ? (prev.excludeDays || []).filter(
+                                  (d) => d !== idx,
+                                )
+                              : [...(prev.excludeDays || []), idx],
+                          }))
+                        }
+                        style={getButtonStyle(
+                          checked ? "primary" : "secondary",
+                        )}
+                        {...bindButtonStates(checked ? "primary" : "secondary")}
+                      >
+                        {label}
+                      </button>
+                    );
+                  },
+                )}
+              </div>
+            </div>
+
+            <div style={{ display: "grid", gap: 8 }}>
+              <div style={{ fontSize: 12.5, fontWeight: 700 }}>
+                Exclude Specific Dates
+              </div>
+
+              <div style={{ display: "flex", gap: 8 }}>
+                <input
+                  type="date"
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    if (!val) return;
+                    setDraft((prev) => ({
+                      ...prev,
+                      excludeDates: [...(prev.excludeDates || []), val],
+                    }));
+                    e.target.value = "";
                   }}
-                >
-                  <div
+                  style={settingsInputStyle}
+                />
+              </div>
+
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                {(draft.excludeDates || []).map((d, i) => (
+                  <span
+                    key={i}
                     style={{
-                      fontSize: 10,
-                      fontWeight: 700,
-                      color: "var(--text-3)",
-                      marginBottom: 8,
-                      textTransform: "uppercase",
-                      letterSpacing: "0.08em",
+                      background: "#fee2e2",
+                      color: "#991b1b",
+                      padding: "4px 8px",
+                      borderRadius: 999,
+                      fontSize: 11,
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 6,
                     }}
                   >
-                    {label}
-                  </div>
-                  <div
+                    {d}
+                    <button
+                      onClick={() =>
+                        setDraft((prev) => ({
+                          ...prev,
+                          excludeDates: prev.excludeDates.filter(
+                            (x) => x !== d,
+                          ),
+                        }))
+                      }
+                      style={{
+                        border: "none",
+                        background: "none",
+                        cursor: "pointer",
+                      }}
+                    >
+                      ✕
+                    </button>
+                  </span>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {showStructureEditor && (
+            <>
+              <div
+                style={{
+                  fontSize: 14,
+                  fontWeight: 800,
+                  color: "#0f172a",
+                }}
+              >
+                {groupedMode && "Category Structure"}
+                {taskMode && "Task Categories"}
+              </div>
+
+              <div
+                style={{
+                  display: "grid",
+                  gap: 18,
+                }}
+              >
+                {(draft.timelineStructure || []).map((group, groupIndex) => {
+                  const representation =
+                    group.representation || REPRESENTATION_TYPES.COLOR;
+
+                  const gridTemplateColumns =
+                    representation === REPRESENTATION_TYPES.ICON
+                      ? GROUP_GRID_ICON
+                      : representation === REPRESENTATION_TYPES.TEXTURE
+                        ? GROUP_GRID_TEXTURE
+                        : GROUP_GRID_COLOR;
+
+                  return (
+                    <div
+                      key={group.id || groupIndex}
+                      style={{
+                        border: "1px solid #e5e7eb",
+                        borderRadius: 20,
+                        padding: 20,
+                        background: "#fff",
+                        display: "grid",
+                        gap: 16,
+                      }}
+                    >
+                      <div
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                          gap: 12,
+                        }}
+                      >
+                        <div style={{ display: "grid", gap: 4 }}>
+                          <div style={categoryCardTitle}>
+                            Category {groupIndex + 1}
+                            {groupIndex === 0 ? " *" : ""}
+                          </div>
+                          <div style={categoryCardSub}>
+                            Define the label, representation, and options for
+                            this category.
+                          </div>
+                        </div>
+
+                        {groupIndex > 0 && (
+                          <button
+                            onClick={() => removeCategory(groupIndex)}
+                            style={{
+                              width: 32,
+                              height: 32,
+                              borderRadius: 8,
+                              border: "1px solid #fecaca",
+                              background: "#fef2f2",
+                              color: "#dc2626",
+                              cursor: "pointer",
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              transition:
+                                "all 0.18s cubic-bezier(0.4, 0, 0.2, 1)",
+                            }}
+                            onMouseEnter={(e) => {
+                              e.currentTarget.style.background = "#fee2e2";
+                              e.currentTarget.style.borderColor = "#fca5a5";
+                            }}
+                            onMouseLeave={(e) => {
+                              e.currentTarget.style.background = "#fef2f2";
+                              e.currentTarget.style.borderColor = "#fecaca";
+                            }}
+                          >
+                            <X size={18} />
+                          </button>
+                        )}
+                      </div>
+
+                      <input
+                        value={group.label || ""}
+                        onChange={(e) =>
+                          updateGroup(groupIndex, { label: e.target.value })
+                        }
+                        placeholder={`Enter Category ${groupIndex + 1} title`}
+                        style={settingsInputStyle}
+                      />
+
+                      <div style={{ display: "grid", gap: 8 }}>
+                        <div
+                          style={{
+                            fontSize: 14,
+                            fontWeight: 700,
+                            color: "#334155",
+                          }}
+                        >
+                          Representation *
+                        </div>
+
+                        <div style={settingsSelectWrap}>
+                          <select
+                            value={representation}
+                            onChange={(e) =>
+                              updateGroup(groupIndex, {
+                                representation: e.target.value,
+                                options: (group.options || []).map(
+                                  (opt, optIndex) => ({
+                                    ...createEmptyOption(
+                                      groupIndex,
+                                      optIndex,
+                                      e.target.value,
+                                    ),
+                                    ...opt,
+                                  }),
+                                ),
+                              })
+                            }
+                            style={settingsSelectStyle}
+                          >
+                            {REPRESENTATION_OPTIONS.map((opt) => (
+                              <option key={opt.value} value={opt.value}>
+                                {opt.label}
+                              </option>
+                            ))}
+                          </select>
+
+                          <div style={settingsSelectArrow}>
+                            <svg
+                              width="16"
+                              height="16"
+                              viewBox="0 0 20 20"
+                              fill="none"
+                            >
+                              <path
+                                d="M5 7l5 5 5-5"
+                                stroke="currentColor"
+                                strokeWidth="2"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                              />
+                            </svg>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div style={settingsHeaderRow(gridTemplateColumns)}>
+                        <div style={settingsLabelStyle}>Option Name *</div>
+                        <div style={settingsLabelStyle}>
+                          {representation === REPRESENTATION_TYPES.ICON
+                            ? "Icon"
+                            : representation === REPRESENTATION_TYPES.TEXTURE
+                              ? "Texture"
+                              : "Color"}
+                        </div>
+                        <div style={settingsLabelStyle}>Action</div>
+                      </div>
+
+                      <div style={{ display: "grid", gap: 12 }}>
+                        {(group.options || []).map((opt, optionIndex) => (
+                          <div
+                            key={opt.id || optionIndex}
+                            style={{
+                              display: "grid",
+                              gridTemplateColumns: gridTemplateColumns,
+                              gap: 12,
+                              alignItems: "center",
+                            }}
+                          >
+                            <input
+                              value={opt.label || ""}
+                              onChange={(e) =>
+                                updateOption(groupIndex, optionIndex, {
+                                  label: e.target.value,
+                                })
+                              }
+                              placeholder="Option name"
+                              style={settingsInputStyle}
+                            />
+
+                            {representation === REPRESENTATION_TYPES.COLOR && (
+                              <div style={settingsColorField}>
+                                <div
+                                  style={{
+                                    ...settingsColorSwatch,
+                                    background: opt.color || "#94a3b8",
+                                  }}
+                                />
+                                <input
+                                  type="color"
+                                  value={opt.color || "#94a3b8"}
+                                  onChange={(e) =>
+                                    updateOption(groupIndex, optionIndex, {
+                                      color: e.target.value,
+                                    })
+                                  }
+                                  style={settingsColorNativeInput}
+                                />
+                              </div>
+                            )}
+
+                            {representation === REPRESENTATION_TYPES.ICON && (
+                              <div style={settingsSelectWrap}>
+                                <div style={settingsSelectIconPreview}>
+                                  <WtIcon
+                                    icon={opt.icon || "circle"}
+                                    size={18}
+                                  />
+                                </div>
+
+                                <select
+                                  value={opt.icon || "circle"}
+                                  onChange={(e) =>
+                                    updateOption(groupIndex, optionIndex, {
+                                      icon: e.target.value,
+                                    })
+                                  }
+                                  style={settingsSelectStyle}
+                                >
+                                  {ICON_OPTIONS.map((icon) => (
+                                    <option key={icon.value} value={icon.value}>
+                                      {icon.label}
+                                    </option>
+                                  ))}
+                                </select>
+
+                                <div style={settingsSelectArrow}>
+                                  <svg
+                                    width="16"
+                                    height="16"
+                                    viewBox="0 0 20 20"
+                                    fill="none"
+                                  >
+                                    <path
+                                      d="M5 7l5 5 5-5"
+                                      stroke="currentColor"
+                                      strokeWidth="2"
+                                      strokeLinecap="round"
+                                      strokeLinejoin="round"
+                                    />
+                                  </svg>
+                                </div>
+                              </div>
+                            )}
+
+                            {representation ===
+                              REPRESENTATION_TYPES.TEXTURE && (
+                              <div
+                                style={{
+                                  display: "grid",
+                                  gridTemplateColumns: "minmax(0,1fr) 110px",
+                                  gap: 12,
+                                  alignItems: "center",
+                                }}
+                              >
+                                <div style={settingsSelectWrap}>
+                                  <select
+                                    value={opt.texture || "solid"}
+                                    onChange={(e) =>
+                                      updateOption(groupIndex, optionIndex, {
+                                        texture: e.target.value,
+                                      })
+                                    }
+                                    style={settingsTextureSelectCompact}
+                                  >
+                                    {TEXTURE_OPTIONS.map((texture) => (
+                                      <option
+                                        key={texture.value}
+                                        value={texture.value}
+                                      >
+                                        {texture.label}
+                                      </option>
+                                    ))}
+                                  </select>
+
+                                  <div style={settingsSelectArrow}>
+                                    <svg
+                                      width="16"
+                                      height="16"
+                                      viewBox="0 0 20 20"
+                                      fill="none"
+                                    >
+                                      <path
+                                        d="M5 7l5 5 5-5"
+                                        stroke="currentColor"
+                                        strokeWidth="2"
+                                        strokeLinecap="round"
+                                        strokeLinejoin="round"
+                                      />
+                                    </svg>
+                                  </div>
+                                </div>
+
+                                <div style={settingsTexturePreviewInline}>
+                                  <div
+                                    style={{
+                                      ...settingsTexturePreviewInner,
+                                      ...getTextureBackground(
+                                        opt.texture || "solid",
+                                        opt.color || "#94a3b8",
+                                      ),
+                                    }}
+                                  />
+                                </div>
+                              </div>
+                            )}
+
+                            <AppButton
+                              variant="softDanger"
+                              onClick={() =>
+                                removeOption(groupIndex, optionIndex)
+                              }
+                            >
+                              Remove
+                            </AppButton>
+                          </div>
+                        ))}
+                      </div>
+
+                      <AppButton
+                        variant="ghost"
+                        onClick={() => addOption(groupIndex)}
+                        style={{ width: "fit-content" }}
+                      >
+                        + Add Option
+                      </AppButton>
+                    </div>
+                  );
+                })}
+
+                {(draft.timelineStructure?.length || 0) <
+                  MAX_CATEGORY_COUNT && (
+                  <AppButton
+                    variant="secondary"
+                    onClick={addCategory}
                     style={{
                       width: "100%",
-                      height: 24,
-                      borderRadius: 6,
-                      background: sample,
-                      border: "1.5px solid var(--border)",
-                      marginBottom: 8,
+                      height: 52,
+                      borderRadius: 16,
+                      fontSize: 15,
+                      fontWeight: 800,
+                      borderStyle: "dashed",
                     }}
-                  />
-                  <input
-                    type="color"
-                    value={local[key] || "#f8f9fa"}
-                    onChange={(e) =>
-                      setLocal((p) => ({ ...p, [key]: e.target.value }))
-                    }
-                    style={{
-                      width: 32,
-                      height: 28,
-                      border: "1px solid var(--border)",
-                      borderRadius: 6,
-                      cursor: "pointer",
-                      padding: 2,
-                    }}
-                  />
-                </div>
-              );
-            })}
+                  >
+                    + Add Category
+                  </AppButton>
+                )}
+              </div>
+            </>
+          )}
+
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+            <AppButton variant="secondary" onClick={onClose}>
+              Cancel
+            </AppButton>
+
+            <AppButton
+              variant="primary"
+              disabled={hasErrors}
+              onClick={() =>
+                saveNow(draft.trackingMode !== settings.trackingMode)
+              }
+            >
+              Save Settings
+            </AppButton>
           </div>
         </div>
+      </Modal>
 
-        {/* Members toggle */}
-        <div>
-          <label
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              padding: "10px 12px",
-              background: "#f8fafc",
-              borderRadius: 10,
-              border: "1.5px solid var(--border)",
-              cursor: "pointer",
-            }}
-          >
-            <span
-              style={{
-                fontSize: 12,
-                fontWeight: 700,
-                color: "var(--text)",
-              }}
-            >
-              Enable Members Column
-            </span>
-            <input
-              type="checkbox"
-              checked={local.membersEnabled !== false}
-              onChange={(e) =>
-                setLocal((p) => ({ ...p, membersEnabled: e.target.checked }))
-              }
-              style={{
-                accentColor: "var(--blue)",
-                width: 16,
-                height: 16,
-                cursor: "pointer",
-              }}
-            />
-          </label>
-        </div>
-      </SettingsSection>
-
-      {/* Footer Actions */}
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "flex-end",
-          gap: 10,
-          marginTop: 12,
-        }}
-      >
-        <button onClick={onClose} style={ghostBtn}>
-          Cancel
-        </button>
-
-        <button
-          onClick={save}
-          style={{
-            background: "#4f46e5",
-            color: "#fff",
-            border: "none",
-            padding: "10px 16px",
-            borderRadius: 10,
-            fontWeight: 700,
-            cursor: "pointer",
+      {showModeWarning && (
+        <ModeChangeWarningModal
+          nextMode={pendingMode}
+          onCancel={() => {
+            setPendingMode(null);
+            setShowModeWarning(false);
           }}
-        >
-          Save Settings
-        </button>
-      </div>
-    </Modal>
+          onConfirm={applyModeChange}
+        />
+      )}
+    </>
   );
 }
 /* ── LEGEND ── */
