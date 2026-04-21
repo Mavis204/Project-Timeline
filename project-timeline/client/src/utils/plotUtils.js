@@ -56,6 +56,7 @@ export function plotPartialDays(slots, plotStart, settings) {
         startFrac: sf,
         endFrac: ef,
         color: slot.color,
+        texture: slot.texture,
         wtId: slot.wtId,
         pId: slot.pId,
         slotName: slot.name,

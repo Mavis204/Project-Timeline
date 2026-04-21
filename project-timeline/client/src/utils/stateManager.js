@@ -32,8 +32,19 @@ import {
   DEF_SETTINGS,
   DEF_TEAM_DATA,
   DEFAULT_TIMELINE_STRUCTURE,
+  TRACKING_MODES,
 } from "../constants";
 import { today, fmt, toArr } from "../utils/dateUtils";
+
+function normalizeTaskEntry(task = {}) {
+  return {
+    priorityHours: task.priorityHours || {},
+    simpleHours: Number(task.simpleHours || 0),
+    taskItems: Array.isArray(task.taskItems) ? task.taskItems : [],
+    plotStart: task.plotStart || null,
+    notes: Array.isArray(task.notes) ? task.notes : [],
+  };
+}
 
 let _uid = Date.now();
 /** Generate a short unique ID. */
@@ -72,6 +83,7 @@ export function mkDefaultWorkspaceSettings() {
   return {
     ...DEF_SETTINGS,
     timelineStructure: DEFAULT_TIMELINE_STRUCTURE,
+    trackingMode: DEF_SETTINGS.trackingMode || TRACKING_MODES.GROUPED,
   };
 }
 
@@ -108,6 +120,11 @@ export function migrateState(s) {
   // Inject timelineStructure if missing (users upgrading from old version)
   if (!s.settings.timelineStructure) {
     s.settings.timelineStructure = DEFAULT_TIMELINE_STRUCTURE;
+  }
+
+  // Ensure trackingMode is set
+  if (!s.settings.trackingMode) {
+    s.settings.trackingMode = TRACKING_MODES.GROUPED;
   }
 
   // Rename old slot keys: "hp_bug" → "opt_high__opt_bug"
@@ -188,7 +205,10 @@ export function migrateState(s) {
       return Object.fromEntries(
         Object.entries(tasks).map(([pid, t]) => [
           pid,
-          { ...t, priorityHours: remapPriorityHours(t.priorityHours) },
+          normalizeTaskEntry({
+            ...t,
+            priorityHours: remapPriorityHours(t.priorityHours),
+          }),
         ]),
       );
     }
@@ -223,20 +243,30 @@ function migrateLegacyState(o) {
     currentTimeline: {
       ...tl,
       plotStart: tl.plotStartDate || tl.plotStart || today(),
-      tasks: tl.projectTasks || tl.tasks || {},
+      tasks: Object.fromEntries(
+        Object.entries(tl.projectTasks || tl.tasks || {}).map(([pid, task]) => [
+          pid,
+          normalizeTaskEntry(task),
+        ]),
+      ),
     },
     archives: (o.archives || []).map((a) => ({
       ...a,
       plotStart: a.plotStartDate || a.plotStart || today(),
-      tasks: a.projectTasks || a.tasks || {},
+      tasks: Object.fromEntries(
+        Object.entries(a.projectTasks || a.tasks || {}).map(([pid, task]) => [
+          pid,
+          normalizeTaskEntry(task),
+        ]),
+      ),
     })),
   };
-  return {
+  return migrateState({
     settings: DEF_SETTINGS,
     teams: [],
     activeTeamId: null,
-    teamData: {},
-  };
+    teamData: { [uid()]: td },
+  });
 }
 
 /**
@@ -257,7 +287,7 @@ export async function bootstrapState() {
     // 2. Try migrating from legacy localStorage keys
     const legacy = await api.loadLegacy();
     if (legacy) {
-      const migrated = migrateState(migrateLegacyState(legacy));
+      const migrated = migrateLegacyState(legacy);
       if (migrated) return migrated;
     }
   } catch (err) {
